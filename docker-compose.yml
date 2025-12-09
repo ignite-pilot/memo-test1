@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: memo-test1-backend
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_HOST=aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=vmcMrs75!KZHk2johkRR:]wL
+      - DB_NAME=memo_test1
+      - FRONTEND_DOMAIN=http://localhost:8500
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: memo-test1-frontend
+    ports:
+      - "8500:8500"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
