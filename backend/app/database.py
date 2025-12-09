@@ -5,8 +5,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../config/config.local.env"))
+# Load environment variables - check PHASE first
+PHASE = os.getenv("PHASE", "local")
+config_file = f"config/config.{PHASE}.env"
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), f"../../{config_file}"))
+# Fallback to local if phase config doesn't exist
+if not os.path.exists(os.path.join(os.path.dirname(__file__), f"../../{config_file}")):
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../config/config.local.env"))
 
 # Database URL from environment or default
 DB_HOST = os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
