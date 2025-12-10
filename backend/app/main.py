@@ -44,6 +44,15 @@ if os.path.exists(static_dir):
     # Mount static files (JS, CSS, images, etc.)
     app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
     
+    # Serve index.html for root path
+    @app.get("/")
+    async def serve_root():
+        """Serve React app for root path."""
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"detail": "Frontend not built"}
+    
     # Serve index.html for all non-API routes (SPA routing)
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
