@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
+from app.secrets import get_postgres_credentials
 
 # Load environment variables - check PHASE first
 PHASE = os.getenv("PHASE", "local")
@@ -13,12 +14,21 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), f"../../{config_
 if not os.path.exists(os.path.join(os.path.dirname(__file__), f"../../{config_file}")):
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../config/config.local.env"))
 
-# Database URL from environment or default
-DB_HOST = os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "vmcMrs75!KZHk2johkRR:]wL")
-DB_NAME = os.getenv("DB_NAME", "memo_test1")
+# Try to get database credentials from AWS Secrets Manager first
+postgres_secret = get_postgres_credentials()
+if postgres_secret:
+    DB_HOST = postgres_secret.get("host") or os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
+    DB_PORT = postgres_secret.get("port") or os.getenv("DB_PORT", "5432")
+    DB_USER = postgres_secret.get("user") or os.getenv("DB_USER", "postgres")
+    DB_PASSWORD = postgres_secret.get("password") or os.getenv("DB_PASSWORD", "")
+    DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo_test1")
+else:
+    # Fallback to environment variables or defaults
+    DB_HOST = os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
+    DB_PORT = os.getenv("DB_PORT", "5432")
+    DB_USER = os.getenv("DB_USER", "postgres")
+    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+    DB_NAME = os.getenv("DB_NAME", "memo_test1")
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
