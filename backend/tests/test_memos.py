@@ -7,8 +7,10 @@ from app.main import app
 from app.database import Base, get_db
 import os
 
-# Use test database
-TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:vmcMrs75!KZHk2johkRR:]wL@aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com:5432/memo_test1")
+# Use test database from environment variable
+TEST_DB_URL = os.getenv("TEST_DATABASE_URL")
+if not TEST_DB_URL:
+    pytest.skip("TEST_DATABASE_URL environment variable is required for database tests", allow_module_level=True)
 
 engine = create_engine(TEST_DB_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

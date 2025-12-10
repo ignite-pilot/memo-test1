@@ -9,12 +9,13 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - DB_HOST=${DB_HOST:-aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com}
+      - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
       - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-vmcMrs75!KZHk2johkRR:]wL}
-      - DB_NAME=${DB_NAME:-memo_test1}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
       - FRONTEND_DOMAIN=${FRONTEND_DOMAIN:-http://localhost:8500}
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-false}
     restart: unless-stopped
 
   frontend:

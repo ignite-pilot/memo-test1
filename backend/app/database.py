@@ -17,18 +17,26 @@ if not os.path.exists(os.path.join(os.path.dirname(__file__), f"../../{config_fi
 # Try to get database credentials from AWS Secrets Manager first
 postgres_secret = get_postgres_credentials()
 if postgres_secret:
-    DB_HOST = postgres_secret.get("host") or os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
+    DB_HOST = postgres_secret.get("host") or os.getenv("DB_HOST")
     DB_PORT = postgres_secret.get("port") or os.getenv("DB_PORT", "5432")
     DB_USER = postgres_secret.get("user") or os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = postgres_secret.get("password") or os.getenv("DB_PASSWORD", "")
-    DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo_test1")
+    DB_PASSWORD = postgres_secret.get("password") or os.getenv("DB_PASSWORD")
+    DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME")
 else:
-    # Fallback to environment variables or defaults
-    DB_HOST = os.getenv("DB_HOST", "aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com")
+    # Fallback to environment variables only (no hardcoded defaults)
+    DB_HOST = os.getenv("DB_HOST")
     DB_PORT = os.getenv("DB_PORT", "5432")
     DB_USER = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-    DB_NAME = os.getenv("DB_NAME", "memo_test1")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
+    DB_NAME = os.getenv("DB_NAME")
+
+# Validate required database configuration
+if not DB_HOST or not DB_PASSWORD or not DB_NAME:
+    raise ValueError(
+        "Database configuration is missing. "
+        "Please set DB_HOST, DB_PASSWORD, and DB_NAME environment variables "
+        "or configure AWS Secrets Manager 'prod/ignite-pilot/postgres'."
+    )
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 

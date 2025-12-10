@@ -7,13 +7,9 @@
 - Health Check를 위한 API를 "/api/health" 이런 Path로 반드시 만들어줘
 
 - Github에 Project 이름으로 Repository를 만들어줘. 
-	- Github에 사용할 Personal Access Token은 환경 변수나 설정 파일에서 참고하도록 해줘
-- Database는 아래 URL에 생성을 해줘
-	- URL : aidev-pgvector-dev.crkgaskg6o61.ap-northeast-2.rds.amazonaws.com
-	- User : postgres
-	- Port : 5432
-	- 비밀번호는 환경 변수나 설정 파일에서 참고하도록 해줘
-	- Database 이름은 Project 이름과 똑같이 해줘
+	- Github에 사용할 Personal Access Token은 AWS Secret Manager "prod/ignite-pilot/github"을 참고해서 사용해줘
+
+- Database는 AWS Secret Manager "prod/ignite-pilot/postgres"를 참고해서 만들어줘
 
 - 실행 관련해서는 config.local.env 파일을 참고해서 만들어줘
 - 실행할 서비스 도메인과 Port는 반드시 config에 지정한 값으로 해줘
