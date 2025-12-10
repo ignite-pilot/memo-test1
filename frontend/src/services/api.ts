@@ -1,7 +1,8 @@
 import axios from 'axios';
 import type { Memo, MemoCreate } from '../types';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8501';
+// Use relative path when served from same server, otherwise use env variable
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,

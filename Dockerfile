@@ -1,6 +1,20 @@
 # 루트 디렉토리용 Dockerfile
-# 전체 프로젝트를 포함하여 빌드
+# Frontend와 Backend를 하나의 서버로 구성
 
+# Multi-stage build: Frontend 빌드
+FROM node:18-alpine AS frontend-builder
+
+WORKDIR /app/frontend
+
+# Frontend 의존성 설치
+COPY frontend/package*.json ./
+RUN npm ci
+
+# Frontend 소스 복사 및 빌드
+COPY frontend/ ./
+RUN npm run build
+
+# Backend 빌드 및 실행
 FROM python:3.11-slim
 
 # 작업 디렉토리 설정
@@ -27,10 +41,14 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# 전체 프로젝트 복사
-COPY . .
+# Backend 코드 복사
+COPY backend/ ./backend/
+COPY config/ ./config/
 
-# Backend 디렉토리로 이동하여 의존성 설치
+# Frontend 빌드 결과 복사 (frontend-builder에서)
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+# Backend 의존성 설치
 WORKDIR /app/backend
 
 # uv를 사용하여 의존성 설치 (requirements.txt 기반)
