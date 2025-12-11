@@ -76,8 +76,11 @@ def get_github_token() -> Optional[str]:
     """
     secret = get_secret("prod/ignite-pilot/github")
     if secret:
-        # Try common key names for GitHub token
-        return secret.get("token") or secret.get("github_token") or secret.get("GITHUB_TOKEN") or secret.get("value")
+        # Try various possible key names (prioritize GITHUB-PAT format)
+        return (secret.get("GITHUB-PAT") or secret.get("GITHUB_PAT") or 
+                secret.get("token") or secret.get("github_token") or 
+                secret.get("GITHUB_TOKEN") or secret.get("githubToken") or
+                secret.get("value"))
     return None
 
 
