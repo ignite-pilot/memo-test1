@@ -44,18 +44,23 @@ def get_secret(secret_name: str, region_name: str = "ap-northeast-2") -> Optiona
             
     except ClientError as e:
         error_code = e.response['Error']['Code']
+        error_message = e.response['Error'].get('Message', '')
         if error_code == 'ResourceNotFoundException':
-            print(f"Secret {secret_name} not found in AWS Secrets Manager")
+            print(f"❌ Secret '{secret_name}' not found in AWS Secrets Manager")
+            print(f"   Please verify the secret name exists in region {region_name}")
         elif error_code == 'InvalidRequestException':
-            print(f"Invalid request for secret {secret_name}")
+            print(f"❌ Invalid request for secret '{secret_name}': {error_message}")
         elif error_code == 'InvalidParameterException':
-            print(f"Invalid parameter for secret {secret_name}")
+            print(f"❌ Invalid parameter for secret '{secret_name}': {error_message}")
         elif error_code == 'DecryptionFailureException':
-            print(f"Decryption failure for secret {secret_name}")
+            print(f"❌ Decryption failure for secret '{secret_name}': {error_message}")
+        elif error_code == 'AccessDeniedException':
+            print(f"❌ Access denied for secret '{secret_name}'")
+            print(f"   Current IAM role/user may not have permission to access this secret")
         elif error_code == 'InternalServiceErrorException':
-            print(f"Internal service error for secret {secret_name}")
+            print(f"❌ Internal service error for secret '{secret_name}': {error_message}")
         else:
-            print(f"Error retrieving secret {secret_name}: {e}")
+            print(f"❌ Error retrieving secret '{secret_name}': {error_code} - {error_message}")
         return None
     except Exception as e:
         print(f"Unexpected error retrieving secret {secret_name}: {e}")
