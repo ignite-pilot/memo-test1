@@ -28,8 +28,8 @@ DB_HOST = postgres_secret.get("host")
 DB_PORT = postgres_secret.get("port") or "5432"  # Port has safe default
 DB_USER = postgres_secret.get("user")
 DB_PASSWORD = postgres_secret.get("password")
-# DB_NAME is project name (memo_test1) - get from environment or use project name
-DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo_test1")
+# DB_NAME is project name (memo-test1) - get from environment or use project name
+DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo-test1")
 
 # Validate required database configuration
 if not DB_HOST or not DB_USER or not DB_PASSWORD or not DB_NAME:

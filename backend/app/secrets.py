@@ -111,10 +111,11 @@ def get_postgres_credentials() -> Optional[Dict[str, str]]:
         
         # Try various possible key names (prioritize DB_* format)
         # DB_NAME might not be in secret, so fallback to environment variable or project name
+        # Project name is memo-test1 (with hyphen), use that as default
         db_name = (secret.get("DB_NAME") or secret.get("DBNAME") or secret.get("dbname") or 
                   secret.get("database") or secret.get("DATABASE") or secret.get("DbName") or 
                   secret.get("Database") or secret.get("dbName") or secret.get("db_name") or
-                  os.getenv("DB_NAME", "memo_test1"))
+                  os.getenv("DB_NAME", "memo-test1"))
         
         return {
             "host": (secret.get("DB_HOST") or secret.get("host") or secret.get("HOST") or 
