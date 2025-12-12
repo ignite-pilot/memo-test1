@@ -11,7 +11,7 @@
 - Github에 Project 이름으로 Repository를 만들어줘. 
 	- Github에 사용할 Personal Access Token은 AWS Secret Manager "prod/ignite-pilot/github"을 참고해서 사용해줘
 # DB 정보
-- Database는 AWS Secret Manager "prod/ignite-pilot/postgresInfo"를 참고해서 만들어줘
+- DB_HOST, DB_PORT, DB_USER, DB_PASSWORD 정보는 AWS Secret Manager "prod/ignite-pilot/postgresInfo2"를 참고해서 만들어주고, DB_NAME은 Project 이름으로 만들어서 그걸 사용하도록 해줘
 
 - 실행 관련해서는 config.local.env 파일을 참고해서 만들어줘
 - 실행할 서비스 도메인과 Port는 반드시 config.local.env에 지정한 값으로 해줘

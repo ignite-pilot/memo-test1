@@ -91,7 +91,7 @@ def get_postgres_credentials() -> Optional[Dict[str, str]]:
     Returns:
         Dictionary with keys: host, port, user, password, dbname
     """
-    secret = get_secret("prod/ignite-pilot/postgresInfo")
+    secret = get_secret("prod/ignite-pilot/postgresInfo2")
     if secret:
         # Debug: print available keys (only in debug mode)
         if os.getenv("DEBUG_SECRETS", "false").lower() == "true":
