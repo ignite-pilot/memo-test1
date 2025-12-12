@@ -9,13 +9,10 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
+      - DB_NAME=${DB_NAME:-memo_test1}
       - FRONTEND_DOMAIN=${FRONTEND_DOMAIN:-http://localhost:8500}
-      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-false}
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - PHASE=${PHASE:-local}
     restart: unless-stopped
 
   frontend:

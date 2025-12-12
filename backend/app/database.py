@@ -14,28 +14,38 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), f"../../{config_
 if not os.path.exists(os.path.join(os.path.dirname(__file__), f"../../{config_file}")):
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../config/config.local.env"))
 
-# Try to get database credentials from AWS Secrets Manager first
+# Get database credentials from AWS Secrets Manager (required)
 postgres_secret = get_postgres_credentials()
-if postgres_secret:
-    DB_HOST = postgres_secret.get("host") or os.getenv("DB_HOST")
-    DB_PORT = postgres_secret.get("port") or os.getenv("DB_PORT", "5432")
-    DB_USER = postgres_secret.get("user") or os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = postgres_secret.get("password") or os.getenv("DB_PASSWORD")
-    DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME")
-else:
-    # Fallback to environment variables only (no hardcoded defaults)
-    DB_HOST = os.getenv("DB_HOST")
-    DB_PORT = os.getenv("DB_PORT", "5432")
-    DB_USER = os.getenv("DB_USER", "postgres")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
-    DB_NAME = os.getenv("DB_NAME")
-
-# Validate required database configuration
-if not DB_HOST or not DB_PASSWORD or not DB_NAME:
+if not postgres_secret:
     raise ValueError(
         "Database configuration is missing. "
-        "Please set DB_HOST, DB_PASSWORD, and DB_NAME environment variables "
-        "or configure AWS Secrets Manager 'prod/ignite-pilot/postgres'."
+        "Please configure AWS Secrets Manager 'prod/ignite-pilot/postgresInfo2' "
+        "or set USE_AWS_SECRETS=true and ensure AWS credentials are configured."
+    )
+
+# Extract credentials from secret (no fallback to environment variables)
+DB_HOST = postgres_secret.get("host")
+DB_PORT = postgres_secret.get("port") or "5432"  # Port has safe default
+DB_USER = postgres_secret.get("user")
+DB_PASSWORD = postgres_secret.get("password")
+# DB_NAME is project name (memo_test1) - get from environment or use project name
+DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo_test1")
+
+# Validate required database configuration
+if not DB_HOST or not DB_USER or not DB_PASSWORD or not DB_NAME:
+    missing = []
+    if not DB_HOST:
+        missing.append("DB_HOST")
+    if not DB_USER:
+        missing.append("DB_USER")
+    if not DB_PASSWORD:
+        missing.append("DB_PASSWORD")
+    if not DB_NAME:
+        missing.append("DB_NAME")
+    raise ValueError(
+        f"Database configuration is incomplete. Missing: {', '.join(missing)}. "
+        f"Please ensure AWS Secrets Manager 'prod/ignite-pilot/postgresInfo2' "
+        f"contains all required fields: DB_HOST, DB_USER, DB_PASSWORD."
     )
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"

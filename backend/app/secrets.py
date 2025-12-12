@@ -17,11 +17,23 @@ def get_secret(secret_name: str, region_name: str = "ap-northeast-2") -> Optiona
     Returns:
         Dictionary containing secret values, or None if retrieval fails
     """
-    # Only use AWS Secrets Manager if running in AWS environment
+    # Use AWS Secrets Manager if explicitly enabled or if running in AWS environment
     # Check for AWS credentials or if explicitly enabled
     use_aws_secrets = os.getenv("USE_AWS_SECRETS", "false").lower() == "true"
     
-    # In local development, fall back to environment variables
+    # Also check if we're in AWS environment (EC2, ECS, Lambda, etc.)
+    # by checking for AWS-specific environment variables or metadata service
+    if not use_aws_secrets:
+        # Check if running in AWS environment
+        aws_env_indicators = [
+            os.getenv("AWS_EXECUTION_ENV"),  # ECS, Lambda
+            os.getenv("ECS_CONTAINER_METADATA_URI"),  # ECS
+            os.getenv("LAMBDA_TASK_ROOT"),  # Lambda
+        ]
+        if any(aws_env_indicators):
+            use_aws_secrets = True
+    
+    # In local development without AWS env, return None to use environment variables
     if not use_aws_secrets:
         return None
     
