@@ -1,18 +1,27 @@
 
 # GitHub 토큰을 AWS Secret Manager에서 가져오기
 # USE_AWS_SECRETS=true로 설정하거나 AWS 환경에서 실행해야 합니다
+export USE_AWS_SECRETS=true
 GITHUB_TOKEN=$(python3 scripts/get_github_token.py)
+
+if [ -z "$GITHUB_TOKEN" ]; then
+  echo "❌ Failed to get GitHub token from AWS Secrets Manager"
+  exit 1
+fi
 
 curl -X POST http://3.39.236.154:8000/api/deploy \
   -H "Content-Type: application/json" \
-  -d '{
-      "application": {
-        "name": "memo-test1",
-        "deployment_phase": "alpha",
-        "github_project_url": "https://github.com/ignite-pilot/memo-test1",
-        "github_access_token": "$GITHUB_TOKEN",
-        "health_check_uri": "/api/health"
-      },
-    }'
-# 참고: GitHub 토큰은 AWS Secret Manager "prod/ignite-pilot/github"에서 가져옵니다.
-# 로컬 환경에서는 USE_AWS_SECRETS=false로 설정하거나 환경 변수 GITHUB_TOKEN을 사용할 수 있습니다.
+  -d "{
+      \"application\": {
+        \"name\": \"memo-test1\",
+        \"deployment_phase\": \"alpha\",
+        \"github_project_url\": \"https://github.com/ignite-pilot/memo-test1\",
+        \"github_access_token\": \"$GITHUB_TOKEN\",
+        \"health_check_uri\": \"/api/health\"
+      }
+    }"
+
+# 참고: 
+# - GitHub 토큰은 AWS Secret Manager "prod/ignite-pilot/github"에서 가져옵니다.
+# - DB 비밀번호는 AWS Secret Manager "prod/ignite-pilot/postgresInfo"에서 자동으로 가져옵니다.
+# - 로컬 환경에서는 USE_AWS_SECRETS=false로 설정하거나 환경 변수 GITHUB_TOKEN을 사용할 수 있습니다.
