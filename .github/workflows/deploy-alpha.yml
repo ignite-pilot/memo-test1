@@ -1,0 +1,112 @@
+name: Alpha 배포
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ## Docker image 빌드: 애플리케이션을 패키징합니다.
+  build-docker-image:
+    runs-on: ubuntu-latest
+    environment: alpha
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 버전 3.11 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 시스템 의존성 설치
+        run: |
+          sudo apt-get update
+
+      - name: 파이썬 의존성 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install uv
+
+      - name: Docker image 생성(애플리케이션 패키징)
+        run: |
+          echo "Work in progress"
+
+      - name: 생성한 Docker image 검증
+        run: |
+          echo "Work in progress"
+  #          docker images | grep ai-tf-t2a-app
+  #          echo "✅ Docker image built successfully"
+
+  ## AWS Infrastructure 배포: 필요한 인프라를 설정합니다. 중복 배포된 인프라가 있다면, 건너뜁니다.
+  deploy-infrastructure-if-necessary:
+    runs-on: ubuntu-latest
+    environment: alpha
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: AWS 로그인 정보 정의
+        run: |
+          echo "work in progress"
+
+      - name: ECR Repository 생성 (이미 존재하면 건너뜁니다)
+        run: |
+          echo "work in progress"
+
+      - name: 빌드한 Docker 이미지 푸시 (linux/amd64)
+        run: |
+          echo "work in progress"
+
+      - name: ACM 인증서 생성 # Alpha/Beta - `*.{app_name}.ig-pilot.com`, Production: `*.{app_name}.ig-pilot.com`
+        run: |
+          echo "work in progress"
+
+      - name: ECS Cluster 생성 (이미 존재하면 건너뜁니다) # cluster name: aws-deploy-wizard
+        run: |
+          echo "work in progress"
+
+      - name: ECS Task Definition 생성 (이미 존재하면 건너뜁니다)
+        run: |
+          echo "work in progress"
+
+      - name: ALB 및 Target Group 생성 (이미 존재하면 건너뜁니다)
+        run: |
+          echo "work in progress"
+
+      - name: ECS Service 배포 # Alpha/Beta: (Fargate Spot), Production: (Fargate On-Demand)
+        run: |
+          echo "work in progress"
+
+      - name: Route 53 DNS 레코드 생성 (ig-pilot.com 호스팅 존에 레코드 추가)
+        run: |
+          echo "work in progress"
+
+  ## 애플리케이션 배포: Docker 이미지를 AWS ECS에 배포합니다.
+  monitor-deployment:
+    runs-on: ubuntu-latest
+    environment: alpha
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECS 서비스 상태 확인
+        run: |
+          echo "work in progress"
+
+      - name: 애플리케이션 정상 배포 여부 확인
+        run: |
+          echo "work in progress"
+
+      - name: 배포 완료 알림
+        run: |
+          echo "work in progress"
