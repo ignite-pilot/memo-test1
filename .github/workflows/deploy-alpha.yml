@@ -2,6 +2,11 @@ name: Alpha 배포
 
 on:
   workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Docker 이미지 이름 (기본값: repository 이름)'
+        required: false
+        type: string
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -11,32 +16,131 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    outputs:
+      image_name: ${{ steps.set-image-name.outputs.image_name }}
+      image_tag: ${{ steps.set-image-name.outputs.image_tag }}
 
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4
 
-      - name: 파이썬 버전 3.11 설정
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: 시스템 의존성 설치
+      - name: 이미지 이름 및 태그 설정
+        id: set-image-name
         run: |
-          sudo apt-get update
+          # Input으로 이미지 이름이 제공되었으면 사용, 아니면 repository 이름 사용
+          if [ -n "${{ inputs.image_name }}" ]; then
+            IMAGE_NAME="${{ inputs.image_name }}"
+          else
+            IMAGE_NAME="${{ github.event.repository.name }}"
+          fi
 
-      - name: 파이썬 의존성 설치
-        run: |
-          python -m pip install --upgrade pip
-          pip install uv
+          # 태그는 git commit SHA의 짧은 버전 사용
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_TAG_SHORT="${IMAGE_TAG:0:7}"
+
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG_SHORT}" >> $GITHUB_OUTPUT
+
+          echo "📦 Docker 이미지 이름: ${IMAGE_NAME}"
+          echo "🏷️  Docker 이미지 태그: ${IMAGE_TAG_SHORT}"
 
       - name: Docker image 생성(애플리케이션 패키징)
         run: |
-          echo "Work in progress"
+          IMAGE_NAME="${{ steps.set-image-name.outputs.image_name }}"
+          IMAGE_TAG="${{ steps.set-image-name.outputs.image_tag }}"
+
+          echo "🔨 Docker 이미지 빌드 시작..."
+          echo "이미지: ${IMAGE_NAME}:${IMAGE_TAG}"
+
+          # Docker 이미지 빌드 (루트 디렉토리의 Dockerfile 사용)
+          docker build \
+            --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+            --tag "${IMAGE_NAME}:latest" \
+            --file Dockerfile \
+            .
+
+          echo "✅ Docker 이미지 빌드 완료"
 
       - name: 생성한 Docker image 검증
         run: |
-          echo "Work in progress"
+          IMAGE_NAME="${{ steps.set-image-name.outputs.image_name }}"
+          IMAGE_TAG="${{ steps.set-image-name.outputs.image_tag }}"
+
+          echo "🔍 Docker 이미지 검증 중..."
+
+          # 이미지 존재 확인
+          if ! docker images | grep -q "${IMAGE_NAME}"; then
+            echo "❌ 오류: Docker 이미지를 찾을 수 없습니다"
+            exit 1
+          fi
+
+          echo "✓ 이미지 존재 확인 완료"
+
+          # 이미지 상세 정보 확인
+          echo ""
+          echo "=== Docker 이미지 정보 ==="
+          docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}"
+
+          # 이미지 메타데이터 검증
+          echo ""
+          echo "=== 이미지 메타데이터 ==="
+          docker inspect "${IMAGE_NAME}:${IMAGE_TAG}" --format='
+          - 생성 시간: {{.Created}}
+          - 아키텍처: {{.Architecture}}
+          - OS: {{.Os}}
+          - 크기: {{.Size}} bytes
+          - Exposed Ports: {{.Config.ExposedPorts}}
+          - Entrypoint: {{.Config.Entrypoint}}
+          - Cmd: {{.Config.Cmd}}'
+
+          # 간단한 실행 테스트 (헬스체크 확인)
+          echo ""
+          echo "=== 컨테이너 실행 테스트 ==="
+          echo "컨테이너를 실행하고 헬스체크를 확인합니다..."
+
+          # 컨테이너 실행 (백그라운드, 자동 삭제)
+          CONTAINER_ID=$(docker run -d --rm \
+            -p 8501:8501 \
+            -e DATABASE_URL="postgresql://test:test@localhost:5432/test" \
+            "${IMAGE_NAME}:${IMAGE_TAG}")
+
+          echo "컨테이너 ID: ${CONTAINER_ID}"
+
+          # 컨테이너가 시작될 때까지 대기 (최대 30초)
+          echo "컨테이너 시작 대기 중..."
+          for i in {1..30}; do
+            if docker ps | grep -q "${CONTAINER_ID}"; then
+              echo "✓ 컨테이너가 실행 중입니다 (${i}초 경과)"
+              break
+            fi
+
+            # 컨테이너가 실패했는지 확인
+            if ! docker ps -a | grep -q "${CONTAINER_ID}"; then
+              echo "❌ 오류: 컨테이너가 시작에 실패했습니다"
+              docker logs "${CONTAINER_ID}" 2>&1 || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          # 컨테이너 상태 확인
+          echo ""
+          echo "컨테이너 상태:"
+          docker ps --filter "id=${CONTAINER_ID}" --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+          # 로그 확인 (처음 20줄)
+          echo ""
+          echo "컨테이너 로그 (처음 20줄):"
+          docker logs "${CONTAINER_ID}" 2>&1 | head -n 20
+
+          # 컨테이너 중지
+          echo ""
+          echo "컨테이너 중지 중..."
+          docker stop "${CONTAINER_ID}" || true
+
+          echo ""
+          echo "✅ Docker 이미지 검증 완료"
 
   ## AWS Infrastructure 배포: 필요한 인프라를 설정합니다. 중복 배포된 인프라가 있다면, 건너뜁니다.
   deploy-infrastructure-if-necessary:
