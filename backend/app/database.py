@@ -14,22 +14,39 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), f"../../{config_
 if not os.path.exists(os.path.join(os.path.dirname(__file__), f"../../{config_file}")):
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../config/config.local.env"))
 
-# Get database credentials from AWS Secrets Manager (required)
+# Get database credentials from AWS Secrets Manager or environment variables
 postgres_secret = get_postgres_credentials()
-if not postgres_secret:
-    raise ValueError(
-        "Database configuration is missing. "
-        "Please configure AWS Secrets Manager 'prod/ignite-pilot/postgresInfo2' "
-        "or set USE_AWS_SECRETS=true and ensure AWS credentials are configured."
-    )
 
-# Extract credentials from secret (no fallback to environment variables)
-DB_HOST = postgres_secret.get("host")
-DB_PORT = postgres_secret.get("port") or "5432"  # Port has safe default
-DB_USER = postgres_secret.get("user")
-DB_PASSWORD = postgres_secret.get("password")
-# DB_NAME is project name (memo-test1) - get from environment or use project name
-DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo-test1")
+if postgres_secret:
+    # AWS Secrets Manager is available - use it
+    DB_HOST = postgres_secret.get("host")
+    DB_PORT = postgres_secret.get("port") or "5432"
+    DB_USER = postgres_secret.get("user")
+    DB_PASSWORD = postgres_secret.get("password")
+    DB_NAME = postgres_secret.get("dbname") or os.getenv("DB_NAME", "memo-test1")
+else:
+    # Fallback to environment variables (for local development, testing, or non-AWS environments)
+    print("⚠️  AWS Secrets Manager not available, using environment variables")
+
+    # Try to parse DATABASE_URL if provided
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        # Parse DATABASE_URL: postgresql://user:password@host:port/dbname
+        import re
+        match = re.match(r'postgresql://([^:]+):([^@]+)@([^:]+):(\d+)/(.+)', database_url)
+        if match:
+            DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME = match.groups()
+        else:
+            raise ValueError(
+                "Invalid DATABASE_URL format. Expected: postgresql://user:password@host:port/dbname"
+            )
+    else:
+        # Use individual environment variables
+        DB_HOST = os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "localhost"))
+        DB_PORT = os.getenv("DB_PORT", os.getenv("POSTGRES_PORT", "5432"))
+        DB_USER = os.getenv("DB_USER", os.getenv("POSTGRES_USER", "postgres"))
+        DB_PASSWORD = os.getenv("DB_PASSWORD", os.getenv("POSTGRES_PASSWORD", ""))
+        DB_NAME = os.getenv("DB_NAME", os.getenv("POSTGRES_DB", "memo-test1"))
 
 # Validate required database configuration
 if not DB_HOST or not DB_USER or not DB_PASSWORD or not DB_NAME:
