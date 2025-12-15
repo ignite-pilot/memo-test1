@@ -37,8 +37,6 @@ jobs:
       - name: 생성한 Docker image 검증
         run: |
           echo "Work in progress"
-  #          docker images | grep ai-tf-t2a-app
-  #          echo "✅ Docker image built successfully"
 
   ## AWS Infrastructure 배포: 필요한 인프라를 설정합니다. 중복 배포된 인프라가 있다면, 건너뜁니다.
   deploy-infrastructure-if-necessary:
@@ -93,12 +91,6 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ vars.AWS_REGION }}
-
       - name: ECS 서비스 상태 확인
         run: |
           echo "work in progress"
