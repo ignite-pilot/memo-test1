@@ -1049,9 +1049,68 @@ jobs:
           # 환경변수로 저장
           echo "SERVICE_NAME=${SERVICE_NAME}" >> $GITHUB_ENV
 
-      - name: Route 53 DNS 레코드 생성 (ig-pilot.com 호스팅 존에 레코드 추가)
+      - name: Route 53 DNS 레코드 생성
         run: |
-          echo "work in progress"
+          set -euo pipefail
+          REGION="ap-northeast-2"
+          ROOT_DOMAIN="ig-pilot.com"
+
+          # 변수 초기화
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
+          HOSTED_ZONE_ID="${{ env.HOSTED_ZONE_ID }}"
+          ALB_DNS="${{ env.ALB_DNS }}"
+          ALB_ARN="${{ env.ALB_ARN }}"
+
+          echo "=== Route 53 DNS 레코드 생성 ==="
+
+          # 도메인 이름 설정
+          if [ "$DEPLOYMENT_PHASE" = "production" ]; then
+            DOMAIN="${IMAGE_NAME}.${ROOT_DOMAIN}"
+          else
+            DOMAIN="${DEPLOYMENT_PHASE}.${IMAGE_NAME}.${ROOT_DOMAIN}"
+          fi
+
+          # ALB의 Hosted Zone ID 조회 (Alias 레코드에 필요)
+          ALB_HOSTED_ZONE_ID=$(aws elbv2 describe-load-balancers \
+            --load-balancer-arns "${ALB_ARN}" \
+            --region ${REGION} \
+            --query 'LoadBalancers[0].CanonicalHostedZoneId' \
+            --output text)
+
+          echo "도메인: ${DOMAIN}"
+          echo "ALB DNS: ${ALB_DNS}"
+
+          # DNS 레코드 UPSERT (생성 또는 업데이트)
+          # heredoc으로 JSON 생성 (파싱 안전성 향상)
+          CHANGE_BATCH=$(cat <<EOFCHANGE
+          {
+            "Changes": [{
+              "Action": "UPSERT",
+              "ResourceRecordSet": {
+                "Name": "${DOMAIN}",
+                "Type": "A",
+                "AliasTarget": {
+                  "HostedZoneId": "${ALB_HOSTED_ZONE_ID}",
+                  "DNSName": "${ALB_DNS}",
+                  "EvaluateTargetHealth": true
+                }
+              }
+            }]
+          }
+          EOFCHANGE
+          )
+
+          aws route53 change-resource-record-sets \
+            --hosted-zone-id "${HOSTED_ZONE_ID}" \
+            --change-batch "${CHANGE_BATCH}" \
+            --query 'ChangeInfo.Id' \
+            --output text > /dev/null
+
+          echo "✓ DNS 레코드 구성 완료 (UPSERT)"
+
+          # 환경변수로 저장
+          echo "APPLICATION_URL=https://${DOMAIN}" >> $GITHUB_ENV
 
   ## 배포 모니터링: 배포된 애플리케이션의 상태를 확인합니다.
   monitor-deployment:
