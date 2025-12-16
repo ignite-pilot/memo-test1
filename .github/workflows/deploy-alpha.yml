@@ -3,6 +3,11 @@ name: Alpha 배포
 on:
   workflow_dispatch:
     inputs:
+      deployment_phase:
+        description: '앱 배포 단계 (기본값: alpha). alpha, beta, production 중 선택. 이외의 값은 허용되지 않음.'
+        required: false
+        type: string
+        default: 'alpha'
       image_name:
         description: 'Docker 이미지 이름 (기본값: repository 이름)'
         required: false
@@ -38,6 +43,13 @@ jobs:
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4
+
+      - name: 애플리케이션 배포 단계 검증
+        run: |
+          if [ ${{ inputs.deployment_phase }} != "alpha" ] && [ ${{ inputs.deployment_phase }} != "beta" ] && [ ${{ inputs.deployment_phase }} != "production" ]; then
+            echo "❌ 오류: 잘못된 deployment_phase 값입니다. 허용되는 값은 'alpha', 'beta', 'production' 입니다."
+            exit 1
+          fi
 
       - name: 이미지 이름 및 태그 설정
         id: set-image-name
