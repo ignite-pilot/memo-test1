@@ -27,6 +27,11 @@ on:
         required: false
         type: string
         default: 'aws-deploy-wizard'
+      secrets_manager_passwords_set_name:
+        description: 'Secrets Manager 보안 암호 이름 (기본값: prod/ignite-pilot/postgresInfo2)'
+        required: false
+        type: string
+        default: 'prod/ignite-pilot/postgresInfo2'
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -145,8 +150,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Route53 Hosted Zone 확인  # 도메인 접근 인증서 생성을 위한 사전 작업
-        # 도메인 생성은 시간이 오래 걸리므로, 최대한 빨리 진행하고 최종 검증 단계에서 확인해 빌드 시간을 줄입니다.
+      # 도메인 접근 인증서 생성을 위한 사전 작업
+      # 도메인 생성은 시간이 오래 걸리므로, 최대한 빨리 진행하고 최종 검증 단계에서 확인해 빌드 시간을 줄입니다.
+      - name: Route53 Hosted Zone 확인
         run: |
           ROOT_DOMAIN="ig-pilot.com"
 
@@ -180,7 +186,8 @@ jobs:
           echo ""
           echo "HOSTED_ZONE_ID=${HOSTED_ZONE_ID}" >> $GITHUB_ENV
 
-      - name: Amazon Certificate Manager 용 인증서 생성 # HTTPS를 위한 SSL/TLS 인증서
+      # HTTPS를 위한 SSL/TLS 인증서 생성
+      - name: Amazon Certificate Manager 용 인증서 생성
         run: |
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
@@ -338,7 +345,7 @@ jobs:
           echo "✓ DNS 검증 레코드 추가 완료"
           echo "💡 ACM 인증서는 백그라운드에서 검증됩니다 (5-30분 소요)"
 
-      - name: ECR 생성    # 이미 존재하면 건너뜁니다
+      - name: ECR 생성
         run: |
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           REPOSITORY_NAME="${{ inputs.ecr_base_name }}/${IMAGE_NAME}"
@@ -436,9 +443,75 @@ jobs:
           echo ""
           echo "CLUSTER_NAME=${CLUSTER_NAME}" >> $GITHUB_ENV
 
-      - name: ECS Task Definition 생성 (이미 존재하면 건너뜁니다)
+      # ECS Task 실행을 위한 IAM 역할 확인
+      - name: IAM Execution Role 생성 및 확인
         run: |
-          echo "work in progress"
+          set -euo pipefail
+          
+          ROLE_NAME="ecsTaskExecutionRole"
+          REGION="ap-northeast-2"
+          
+          echo "=== IAM Execution Role 확인 ==="
+          echo "Role 이름: ${ROLE_NAME}"
+          echo ""
+          
+          TRUST_POLICY='{
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": { "Service": "ecs-tasks.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }]
+          }'
+          
+          SECRETS_POLICY='{
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": "secretsmanager:GetSecretValue",
+              "Resource": "arn:aws:secretsmanager:'"${REGION}"':*:secret:prod/ignite-pilot/*"
+            }]
+          }'
+          
+          # Role 존재 여부 확인
+          if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+            echo "✓ 기존 Execution Role 사용: ${ROLE_NAME}"
+          else
+            echo "Execution Role 생성 중: ${ROLE_NAME}"
+          
+            aws iam create-role \
+              --role-name "${ROLE_NAME}" \
+              --assume-role-policy-document "${TRUST_POLICY}" \
+              >/dev/null
+          
+            echo "✓ Role 생성 완료"
+          fi
+          
+          # Role ARN 조회 (공통)
+          ROLE_ARN=$(aws iam get-role \
+            --role-name "${ROLE_NAME}" \
+            --query 'Role.Arn' \
+            --output text)
+          
+          echo "✓ Execution Role ARN: ${ROLE_ARN}"
+          
+          # AWS 관리형 정책 연결 (중복 연결 안전)
+          aws iam attach-role-policy \
+            --role-name "${ROLE_NAME}" \
+            --policy-arn "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+          
+          echo "✓ AmazonECSTaskExecutionRolePolicy 연결 완료"
+          
+          # Secrets Manager inline policy (항상 보장)
+          aws iam put-role-policy \
+            --role-name "${ROLE_NAME}" \
+            --policy-name "SecretsManagerAccess" \
+            --policy-document "${SECRETS_POLICY}"
+          
+          echo "✓ Secrets Manager 접근 권한 보장 완료"
+          
+          echo ""
+          echo "EXECUTION_ROLE_ARN=${ROLE_ARN}" >> "$GITHUB_ENV"
 
       - name: ALB 및 Target Group 생성 (이미 존재하면 건너뜁니다)
         run: |
