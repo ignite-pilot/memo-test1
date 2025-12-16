@@ -965,9 +965,89 @@ jobs:
           echo "  - Target Group: ${{ env.TARGET_GROUP_ARN }}"
           echo "=========================================="
 
-      - name: ECS Service 배포 # Alpha/Beta: (Fargate Spot), Production: (Fargate On-Demand)
+      - name: ECS Service 배포
         run: |
-          echo "work in progress"
+          set -euo pipefail
+          REGION="ap-northeast-2"
+
+          # 변수 초기화
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
+          CLUSTER_NAME="${{ env.CLUSTER_NAME }}"
+          TASK_DEFINITION_ARN="${{ env.TASK_DEFINITION_ARN }}"
+          TARGET_GROUP_ARN="${{ env.TARGET_GROUP_ARN }}"
+          SECURITY_GROUP_ID="${{ env.SECURITY_GROUP_ID }}"
+          SUBNET_IDS="${{ env.SUBNET_IDS }}"
+          CONTAINER_PORT="${{ env.CONTAINER_PORT }}"
+          SERVICE_NAME="${IMAGE_NAME}-service"
+
+          echo "=== ECS Service 배포 ==="
+          echo "Service: ${SERVICE_NAME}"
+          echo "Cluster: ${CLUSTER_NAME}"
+          echo "Deployment Phase: ${DEPLOYMENT_PHASE}"
+
+          # Helper 함수
+          is_valid() { [ "$1" != "None" ] && [ "$1" != "null" ] && [ -n "$1" ]; }
+
+          # Capacity Provider 설정 (alpha/beta: FARGATE_SPOT, production: FARGATE)
+          if [ "$DEPLOYMENT_PHASE" = "production" ]; then
+            CAPACITY_PROVIDER="FARGATE"
+            FORCE_NEW_DEPLOYMENT=""
+            echo "✓ Capacity Provider: FARGATE (On-Demand)"
+          else
+            CAPACITY_PROVIDER="FARGATE_SPOT"
+            FORCE_NEW_DEPLOYMENT="--force-new-deployment"
+            echo "✓ Capacity Provider: FARGATE_SPOT (latest 태그, force deployment)"
+          fi
+
+          # 기존 Service 확인
+          SERVICE_STATUS=$(aws ecs describe-services \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region ${REGION} \
+            --query 'services[0].status' \
+            --output text 2>/dev/null || echo "NONE")
+
+          if [ "$SERVICE_STATUS" = "ACTIVE" ]; then
+            # Service 업데이트
+            echo "기존 Service 업데이트 중..."
+            aws ecs update-service \
+              --cluster "${CLUSTER_NAME}" \
+              --service "${SERVICE_NAME}" \
+              --task-definition "${TASK_DEFINITION_ARN}" \
+              --desired-count 1 \
+              --capacity-provider-strategy capacityProvider=${CAPACITY_PROVIDER},weight=1 \
+              ${FORCE_NEW_DEPLOYMENT} \
+              --region ${REGION} \
+              --query 'service.serviceName' \
+              --output text > /dev/null
+
+            echo "✓ Service 업데이트 완료: ${SERVICE_NAME}"
+          else
+            # Service 생성
+            echo "새 Service 생성 중..."
+
+            # Subnet IDs를 배열 형식으로 변환 (쉼표 → 공백)
+            SUBNET_ARRAY=$(echo ${SUBNET_IDS} | tr ',' ' ')
+
+            aws ecs create-service \
+              --cluster "${CLUSTER_NAME}" \
+              --service-name "${SERVICE_NAME}" \
+              --task-definition "${TASK_DEFINITION_ARN}" \
+              --desired-count 1 \
+              --capacity-provider-strategy capacityProvider=${CAPACITY_PROVIDER},weight=1 \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${SECURITY_GROUP_ID}],assignPublicIp=ENABLED}" \
+              --load-balancers "targetGroupArn=${TARGET_GROUP_ARN},containerName=${IMAGE_NAME},containerPort=${CONTAINER_PORT}" \
+              --region ${REGION} \
+              --tags key=Name,value=${SERVICE_NAME} key=Application,value=${IMAGE_NAME} key=ManagedBy,value=github-actions \
+              --query 'service.serviceName' \
+              --output text > /dev/null
+
+            echo "✓ Service 생성 완료: ${SERVICE_NAME}"
+          fi
+
+          # 환경변수로 저장
+          echo "SERVICE_NAME=${SERVICE_NAME}" >> $GITHUB_ENV
 
       - name: Route 53 DNS 레코드 생성 (ig-pilot.com 호스팅 존에 레코드 추가)
         run: |
