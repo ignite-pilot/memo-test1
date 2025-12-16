@@ -145,6 +145,41 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
+      - name: Route53 Hosted Zone 확인  # 도메인 접근 인증서 생성을 위한 사전 작업
+        # 도메인 생성은 시간이 오래 걸리므로, 최대한 빨리 진행하고 최종 검증 단계에서 확인해 빌드 시간을 줄입니다.
+        run: |
+          ROOT_DOMAIN="ig-pilot.com"
+
+          echo "=== Route53 Hosted Zone 확인 ==="
+          echo "도메인: ${ROOT_DOMAIN}"
+          echo ""
+
+          # Hosted Zone 존재 확인
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+            --query "HostedZones[?Name=='${ROOT_DOMAIN}.'].Id" \
+            --output text 2>/dev/null | cut -d'/' -f3)
+
+          if [ -n "$HOSTED_ZONE_ID" ]; then
+            echo "✓ 기존 Hosted Zone 사용: ${HOSTED_ZONE_ID}"
+          else
+            echo "Hosted Zone 생성 중: ${ROOT_DOMAIN}"
+
+            # Caller Reference (고유 식별자)
+            CALLER_REF="github-actions-$(date +%s)"
+
+            HOSTED_ZONE_ID=$(aws route53 create-hosted-zone \
+              --name "${ROOT_DOMAIN}" \
+              --caller-reference "${CALLER_REF}" \
+              --hosted-zone-config Comment="Created by GitHub Actions" \
+              --query 'HostedZone.Id' \
+              --output text | cut -d'/' -f3)
+
+            echo "✓ Hosted Zone 생성 완료: ${HOSTED_ZONE_ID}"
+          fi
+
+          echo ""
+          echo "HOSTED_ZONE_ID=${HOSTED_ZONE_ID}" >> $GITHUB_ENV
+
       - name: ECR 생성    # 이미 존재하면 건너뜁니다
         run: |
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
