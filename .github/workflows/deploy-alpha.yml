@@ -12,6 +12,11 @@ on:
         description: 'Docker 이미지 이름 (기본값: repository 이름)'
         required: false
         type: string
+      container_port:
+        description: '컨테이너 포트 번호 (기본값: 8501)'
+        required: false
+        type: string
+        default: '8501'
       health_check_path:
         description: 'Health check endpoint 경로 (기본값: /api/health)'
         required: false
@@ -32,6 +37,16 @@ on:
         required: false
         type: string
         default: 'prod/ignite-pilot/postgresInfo2'
+      task_cpu:
+        description: 'ECS Task CPU 설정 (기본값: 512 = 0.5 vCPU)'
+        required: false
+        type: string
+        default: '512'
+      task_memory:
+        description: 'ECS Task Memory 설정 (기본값: 1024 MB)'
+        required: false
+        type: string
+        default: '1024'
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -540,6 +555,136 @@ jobs:
 
           echo ""
           echo "LOG_GROUP=${LOG_GROUP}" >> $GITHUB_ENV
+
+      # ECS Task Definition 관리시 주의 사항:
+      #  1. 만약 콘솔에서 손으로 직접 Revision 올릴 경우, workflow 를 적절하게 수정하지 않으면 배포가 깨질 수 있음!!
+      #  2. Task definition versioning policy:
+      #     a. alpha, beta 에서는 revision 유지. 왜냐면 image tag 가 latest 이기 때문.
+      #     b. production 에서는 revision 항상 증가. 왜냐면 image tag 를 매번 변경하기 때문.
+      - name: ECS Task Definition 확인 및 등록
+        run: |
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          IMAGE_TAG="${{ needs.build-docker-image.outputs.image_tag }}"
+          REPOSITORY_URI="${{ env.REPOSITORY_URI }}"
+          EXECUTION_ROLE_ARN="${{ env.EXECUTION_ROLE_ARN }}"
+          LOG_GROUP="${{ env.LOG_GROUP }}"
+          DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
+
+          FAMILY="${IMAGE_NAME}-task"
+          # Alpha/Beta 환경은 latest 태그 사용 (IMAGE_TAG 무시)
+          IMAGE_URI="${REPOSITORY_URI}:latest"
+          CONTAINER_PORT=${{ inputs.container_port }}
+          SECRET_NAME="${{ inputs.secrets_manager_passwords_set_name }}"
+
+          echo "=== ECS Task Definition 확인 ==="
+          echo "Family: ${FAMILY}"
+          echo "Image: ${IMAGE_URI}"
+          echo "Port: ${CONTAINER_PORT}"
+          echo ""
+
+          # Task Definition Family 존재 여부 확인
+          EXISTING_TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition "${FAMILY}" \
+            --region ap-northeast-2 \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_TASK_DEF" ]; then
+            # 기존 Task Definition이 있으면 최신 revision 재사용
+            TASK_DEF_ARN="$EXISTING_TASK_DEF"
+            REVISION=$(echo "${TASK_DEF_ARN}" | awk -F: '{print $NF}')
+            echo "✓ 기존 Task Definition 재사용: ${FAMILY}:${REVISION}"
+            echo "  (Alpha/Beta 환경은 latest 태그로 force deployment 사용)"
+          else
+            # Task Definition이 없으면 새로 생성
+            echo "Task Definition이 없습니다. 새로 생성합니다..."
+            echo ""
+
+            # Secrets Manager에서 키 목록 동적 조회
+            echo "Secrets Manager 키 조회 중..."
+            SECRET_JSON=$(aws secretsmanager get-secret-value \
+              --secret-id "${SECRET_NAME}" \
+              --region ap-northeast-2 \
+              --query SecretString \
+              --output text 2>/dev/null || echo "{}")
+
+            # JSON 키 목록 추출 및 secrets 필드 동적 생성 (jq 활용)
+            if [ "$SECRET_JSON" != "{}" ]; then
+              echo "✓ Secret 발견, 동적으로 매핑 생성 중..."
+
+              # jq를 사용하여 secrets 필드 생성 (간결하고 안전)
+              SECRETS_ARRAY=$(echo "$SECRET_JSON" | jq -c --arg sn "$SECRET_NAME" \
+                '[keys[] | {name: ., valueFrom: ($sn + ":" + . + "::")}]')
+
+              # 매핑된 키 개수 계산
+              SECRET_COUNT=$(echo "$SECRETS_ARRAY" | jq 'length')
+              echo "✓ Secrets 필드 생성 완료 (${SECRET_COUNT}개 키 매핑됨)"
+            else
+              echo "⚠️  Secret을 찾을 수 없습니다. 환경변수 fallback만 사용됩니다."
+              SECRETS_ARRAY="[]"
+            fi
+
+            # 매핑된 환경변수 키 목록 출력. 디버깅 목적으로 활용합니다.
+            if [ "$SECRETS_ARRAY" != "[]" ]; then
+              echo "매핑된 환경변수 키:"
+              echo "$SECRETS_ARRAY" | jq -r '.[].name' | sed 's/^/  - /'
+            fi
+            echo ""
+
+            # Container Definitions 생성 (jq 활용으로 가독성 및 안정성 향상)
+            CONTAINER_DEFS=$(jq -nc \
+              --arg name "$IMAGE_NAME" \
+              --arg image "$IMAGE_URI" \
+              --argjson port "$CONTAINER_PORT" \
+              --arg phase "$DEPLOYMENT_PHASE" \
+              --arg log_group "$LOG_GROUP" \
+              --argjson secrets "$SECRETS_ARRAY" \
+              '[{
+                name: $name,
+                image: $image,
+                portMappings: [{
+                  containerPort: $port,
+                  protocol: "tcp"
+                }],
+                environment: [
+                  {name: "ENVIRONMENT", value: $phase},
+                  {name: "PHASE", value: $phase}
+                ],
+                secrets: $secrets,
+                logConfiguration: {
+                  logDriver: "awslogs",
+                  options: {
+                    "awslogs-group": $log_group,
+                    "awslogs-region": "ap-northeast-2",
+                    "awslogs-stream-prefix": $name
+                  }
+                },
+                essential: true
+              }]')
+
+            # Task Definition 등록 (최초 1회만)
+            TASK_DEF_ARN=$(aws ecs register-task-definition \
+              --family "${FAMILY}" \
+              --network-mode awsvpc \
+              --requires-compatibilities FARGATE \
+              --cpu ${{ inputs.task_cpu }} \
+              --memory ${{ inputs.task_memory }} \
+              --execution-role-arn "${EXECUTION_ROLE_ARN}" \
+              --container-definitions "$CONTAINER_DEFS" \
+              --region ap-northeast-2 \
+              --tags key=Name,value=${FAMILY} key=Application,value=${IMAGE_NAME} key=ManagedBy,value=github-actions \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)
+
+            REVISION=$(echo "${TASK_DEF_ARN}" | awk -F: '{print $NF}')
+
+            echo "✓ Task Definition 생성 완료: ${FAMILY}:${REVISION}"
+            echo "  ARN: ${TASK_DEF_ARN}"
+          fi
+
+          echo ""
+          echo "TASK_DEFINITION_ARN=${TASK_DEF_ARN}" >> $GITHUB_ENV
+          echo "CONTAINER_PORT=${CONTAINER_PORT}" >> $GITHUB_ENV
 
       - name: ALB 및 Target Group 생성 (이미 존재하면 건너뜁니다)
         run: |
