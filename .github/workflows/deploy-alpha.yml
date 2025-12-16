@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: 'aws-deploy-wizard'
+      ecs_cluster_base_name:
+        description: 'ECS Cluster 이름 (기본값: aws-deploy-wizard)'
+        required: false
+        type: string
+        default: 'aws-deploy-wizard'
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -192,9 +197,39 @@ jobs:
           echo "  - ${REPOSITORY_URI}:${IMAGE_TAG}"
           echo "  - ${REPOSITORY_URI}:latest"
 
-      - name: ECS Cluster 생성 (이미 존재하면 건너뜁니다) # cluster name: aws-deploy-wizard
+      - name: ECS Cluster 생성
         run: |
-          echo "work in progress"
+          CLUSTER_NAME="${{ inputs.ecs_cluster_base_name }}"
+
+          echo "=== ECS Cluster 확인 ==="
+          echo "Cluster 이름: ${CLUSTER_NAME}"
+          echo ""
+
+          # Cluster 존재 확인
+          CLUSTER_STATUS=$(aws ecs describe-clusters \
+            --clusters "${CLUSTER_NAME}" \
+            --region ap-northeast-2 \
+            --query 'clusters[0].status' \
+            --output text 2>/dev/null || echo "NONE")
+
+          if [ "$CLUSTER_STATUS" = "ACTIVE" ]; then
+            echo "✓ 기존 ECS Cluster 사용: ${CLUSTER_NAME}"
+          elif [ "$CLUSTER_STATUS" = "NONE" ] || [ "$CLUSTER_STATUS" = "INACTIVE" ]; then
+            # Cluster 생성
+            echo "ECS Cluster 생성 중: ${CLUSTER_NAME}"
+            aws ecs create-cluster \
+              --cluster-name "${CLUSTER_NAME}" \
+              --region ap-northeast-2 \
+              --tags key=Name,value=${CLUSTER_NAME} key=ManagedBy,value=github-actions \
+              > /dev/null
+
+            echo "✓ ECS Cluster 생성 완료: ${CLUSTER_NAME}"
+          else
+            echo "⚠️  Cluster 상태 확인 불가: ${CLUSTER_STATUS}"
+          fi
+
+          echo ""
+          echo "CLUSTER_NAME=${CLUSTER_NAME}" >> $GITHUB_ENV
 
       - name: ECS Task Definition 생성 (이미 존재하면 건너뜁니다)
         run: |
