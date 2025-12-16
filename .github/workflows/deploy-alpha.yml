@@ -7,6 +7,11 @@ on:
         description: 'Docker 이미지 이름 (기본값: repository 이름)'
         required: false
         type: string
+      health_check_path:
+        description: 'Health check endpoint 경로 (기본값: /api/health)'
+        required: false
+        type: string
+        default: '/api/health'
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -69,8 +74,11 @@ jobs:
           echo "🔍 Docker 이미지 검증 중..."
 
           # 이미지 존재 확인
-          if ! docker images | grep -q "${IMAGE_NAME}"; then
-            echo "❌ 오류: Docker 이미지를 찾을 수 없습니다"
+          if ! docker images "${IMAGE_NAME}:${IMAGE_TAG}" --format "{{.Repository}}:{{.Tag}}" | grep -q "${IMAGE_NAME}:${IMAGE_TAG}"; then
+            echo "❌ 오류: Docker 이미지를 찾을 수 없습니다 (${IMAGE_NAME}:${IMAGE_TAG})"
+            echo ""
+            echo "사용 가능한 이미지 목록:"
+            docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" || true
             exit 1
           fi
 
@@ -81,7 +89,6 @@ jobs:
           echo "=== Docker 이미지 정보 ==="
           docker images "${IMAGE_NAME}" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}"
 
-          # 이미지 메타데이터 검증
           echo ""
           echo "=== 이미지 메타데이터 ==="
           docker inspect "${IMAGE_NAME}:${IMAGE_TAG}" --format='
@@ -93,57 +100,12 @@ jobs:
           - Entrypoint: {{.Config.Entrypoint}}
           - Cmd: {{.Config.Cmd}}'
 
-          # 간단한 실행 테스트 (헬스체크 확인)
-          echo ""
-          echo "=== 컨테이너 실행 테스트 ==="
-          echo "컨테이너를 실행하고 헬스체크를 확인합니다..."
-
-          # 컨테이너 실행 (백그라운드, 자동 삭제)
-          CONTAINER_ID=$(docker run -d --rm \
-            -p 8501:8501 \
-            -e DATABASE_URL="postgresql://test:test@localhost:5432/test" \
-            "${IMAGE_NAME}:${IMAGE_TAG}")
-
-          echo "컨테이너 ID: ${CONTAINER_ID}"
-
-          # 컨테이너가 시작될 때까지 대기 (최대 30초)
-          echo "컨테이너 시작 대기 중..."
-          for i in {1..30}; do
-            if docker ps | grep -q "${CONTAINER_ID}"; then
-              echo "✓ 컨테이너가 실행 중입니다 (${i}초 경과)"
-              break
-            fi
-
-            # 컨테이너가 실패했는지 확인
-            if ! docker ps -a | grep -q "${CONTAINER_ID}"; then
-              echo "❌ 오류: 컨테이너가 시작에 실패했습니다"
-              docker logs "${CONTAINER_ID}" 2>&1 || true
-              exit 1
-            fi
-
-            sleep 1
-          done
-
-          # 컨테이너 상태 확인
-          echo ""
-          echo "컨테이너 상태:"
-          docker ps --filter "id=${CONTAINER_ID}" --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
-
-          # 로그 확인 (처음 20줄)
-          echo ""
-          echo "컨테이너 로그 (처음 20줄):"
-          docker logs "${CONTAINER_ID}" 2>&1 | head -n 20
-
-          # 컨테이너 중지
-          echo ""
-          echo "컨테이너 중지 중..."
-          docker stop "${CONTAINER_ID}" || true
-
           echo ""
           echo "✅ Docker 이미지 검증 완료"
 
   ## AWS Infrastructure 배포: 필요한 인프라를 설정합니다. 중복 배포된 인프라가 있다면, 건너뜁니다.
   deploy-infrastructure-if-necessary:
+    needs: build-docker-image
     runs-on: ubuntu-latest
     environment: alpha
     permissions:
@@ -187,8 +149,9 @@ jobs:
         run: |
           echo "work in progress"
 
-  ## 애플리케이션 배포: Docker 이미지를 AWS ECS에 배포합니다.
+  ## 배포 모니터링: 배포된 애플리케이션의 상태를 확인합니다.
   monitor-deployment:
+    needs: deploy-infrastructure-if-necessary
     runs-on: ubuntu-latest
     environment: alpha
     permissions:

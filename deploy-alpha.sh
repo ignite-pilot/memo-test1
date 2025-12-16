@@ -25,11 +25,34 @@ fi
 OWNER="ignite-pilot"
 REPO="memo-test1"
 WORKFLOW_FILE="deploy-alpha.yml"
-BRANCH="${1:-main}"  # 첫 번째 인자로 브랜치를 받거나, 기본값은 main
+
+# Custom 인자 처리
+BRANCH="${1:-main}"
+HEALTH_CHECK_PATH="${2:-/api/health}"
 
 echo "Alpha 배포를 시작합니다."
-echo "Repository: ${OWNER}/${REPO}"
-echo "Branch: ${BRANCH}"
+echo "Repository       : ${OWNER}/${REPO}"
+echo "Branch           : ${BRANCH}"
+echo "Health Check Path: ${HEALTH_CHECK_PATH}"
+echo ""
+
+# Step 1: 로컬에서 Docker 이미지 빌드 및 검증
+echo "=================================="
+echo "Step 1: Docker 이미지 빌드"
+echo "=================================="
+echo ""
+
+if [ -f "./build-alpha.sh" ]; then
+  ./build-alpha.sh "${REPO}"
+else
+  echo "❌ 오류: build-alpha.sh 파일을 찾을 수 없습니다"
+  exit 1
+fi
+
+echo ""
+echo "=================================="
+echo "Step 2: GitHub Workflow 실행"
+echo "=================================="
 echo ""
 
 # GitHub API를 통해 workflow dispatch
@@ -39,7 +62,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" \
   -H "Authorization: Bearer ${GITHUB_TOKEN}" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   "https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches" \
-  -d "{\"ref\":\"${BRANCH}\"}")
+  -d "{\"ref\":\"${BRANCH}\", \"inputs\":{\"health_check_path\":\"${HEALTH_CHECK_PATH}\"}}")
 
 # HTTP 상태 코드 추출
 HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
