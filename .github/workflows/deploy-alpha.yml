@@ -8,6 +8,22 @@ on:
         required: false
         type: string
         default: 'alpha'
+      aws_region:
+        description: 'AWS 리전 (기본값: ap-northeast-2)'
+        required: false
+        type: choice
+        options:
+          - ap-northeast-2
+          - us-east-1
+          - us-west-2
+          - eu-west-1
+          - ap-southeast-1
+        default: 'ap-northeast-2'
+      root_domain:
+        description: '루트 도메인 (예: ig-pilot.com)'
+        required: false
+        type: string
+        default: 'ig-pilot.com'
       image_name:
         description: 'Docker 이미지 이름 (기본값: repository 이름)'
         required: false
@@ -33,7 +49,7 @@ on:
         type: string
         default: 'aws-deploy-wizard'
       secrets_manager_passwords_set_name:
-        description: 'Secrets Manager 보안 암호 이름 (기본값: prod/ignite-pilot/postgresInfo2)'
+        description: 'Secrets Manager 보안 암호 이름 (기본값: prod/ignite-pilot/postgresInfo2, 권장 패턴: {phase}/{application}/{secretName})'
         required: false
         type: string
         default: 'prod/ignite-pilot/postgresInfo2'
@@ -47,12 +63,95 @@ on:
         required: false
         type: string
         default: '1024'
+      dockerfile_path:
+        description: 'Dockerfile 경로 (기본값: Dockerfile)'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      build_context:
+        description: 'Docker 빌드 컨텍스트 경로 (기본값: .)'
+        required: false
+        type: string
+        default: '.'
+      target_platform:
+        description: '타겟 플랫폼 아키텍처 (기본값: linux/amd64)'
+        required: false
+        type: string
+        default: 'linux/amd64'
+      ecs_desired_count:
+        description: 'ECS Service 실행할 Task 개수 (기본값: 1)'
+        required: false
+        type: number
+        default: 1
+      assign_public_ip:
+        description: 'ECS Task에 퍼블릭 IP 할당 여부 (기본값: ENABLED)'
+        required: false
+        type: choice
+        options:
+          - ENABLED
+          - DISABLED
+        default: 'ENABLED'
+      health_check_interval:
+        description: 'Health check 간격(초) (기본값: 30)'
+        required: false
+        type: number
+        default: 30
+      health_check_timeout:
+        description: 'Health check 타임아웃(초) (기본값: 5)'
+        required: false
+        type: number
+        default: 5
+      healthy_threshold:
+        description: 'Healthy 판정 임계값 (기본값: 2)'
+        required: false
+        type: number
+        default: 2
+      unhealthy_threshold:
+        description: 'Unhealthy 판정 임계값 (기본값: 2)'
+        required: false
+        type: number
+        default: 2
+      # === Tier 3: 고급 설정 ===
+      ecs_stabilization_timeout:
+        description: 'ECS 서비스 안정화 최대 대기 시간(초) (기본값: 600 = 10분)'
+        required: false
+        type: number
+        default: 600
+      log_retention_days:
+        description: 'CloudWatch 로그 보관 기간(일) (기본값: 7, 0=무제한)'
+        required: false
+        type: choice
+        options:
+          - '0'
+          - '1'
+          - '3'
+          - '5'
+          - '7'
+          - '14'
+          - '30'
+          - '60'
+          - '90'
+          - '120'
+          - '150'
+          - '180'
+          - '365'
+          - '400'
+          - '545'
+          - '731'
+          - '1827'
+          - '3653'
+        default: '7'
+
+# 공통 환경 변수
+env:
+  AWS_REGION: ${{ inputs.aws_region }}
+  ROOT_DOMAIN: ${{ inputs.root_domain }}
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
   build-docker-image:
     runs-on: ubuntu-latest
-    environment: alpha
+    environment: ${{ inputs.deployment_phase }}
     permissions:
       id-token: write
       contents: read
@@ -99,12 +198,12 @@ jobs:
           echo "🔨 Docker 이미지 빌드 시작..."
           echo "이미지: ${IMAGE_NAME}:${IMAGE_TAG}"
 
-          # Docker 이미지 빌드 (루트 디렉토리의 Dockerfile 사용)
+          # Docker 이미지 빌드
           docker build \
             --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
             --tag "${IMAGE_NAME}:latest" \
-            --file Dockerfile \
-            .
+            --file ${{ inputs.dockerfile_path }} \
+            ${{ inputs.build_context }}
 
           echo "✅ Docker 이미지 빌드 완료"
 
@@ -149,10 +248,14 @@ jobs:
   deploy-infrastructure-if-necessary:
     needs: build-docker-image
     runs-on: ubuntu-latest
-    environment: alpha
+    environment: ${{ inputs.deployment_phase }}
     permissions:
       id-token: write
       contents: read
+    outputs:
+      service_name: ${{ steps.set-outputs.outputs.service_name }}
+      cluster_name: ${{ steps.set-outputs.outputs.cluster_name }}
+      application_url: ${{ steps.set-outputs.outputs.application_url }}
 
     steps:
       - name: 코드 체크아웃
@@ -169,7 +272,7 @@ jobs:
       # 도메인 생성은 시간이 오래 걸리므로, 최대한 빨리 진행하고 최종 검증 단계에서 확인해 빌드 시간을 줄입니다.
       - name: Route53 Hosted Zone 확인
         run: |
-          ROOT_DOMAIN="ig-pilot.com"
+          ROOT_DOMAIN="${{ env.ROOT_DOMAIN }}"
 
           echo "=== Route53 Hosted Zone 확인 ==="
           echo "도메인: ${ROOT_DOMAIN}"
@@ -206,7 +309,7 @@ jobs:
         run: |
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
-          ROOT_DOMAIN="ig-pilot.com"
+          ROOT_DOMAIN="${{ env.ROOT_DOMAIN }}"
 
           echo "=== ACM 인증서 확인 ==="
 
@@ -405,13 +508,13 @@ jobs:
           echo "ECR 인증 중..."
           aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${REPOSITORY_URI%%/*}
 
-          # Docker 이미지 빌드 (linux/amd64 플랫폼 - ECS Fargate 요구사항)
-          echo "Docker 이미지 빌드 중 (linux/amd64)..."
-          docker build --platform linux/amd64 \
+          # Docker 이미지 빌드 (ECS Fargate 요구사항)
+          echo "Docker 이미지 빌드 중 (${{ inputs.target_platform }})..."
+          docker build --platform ${{ inputs.target_platform }} \
             -t ${REPOSITORY_URI}:${IMAGE_TAG} \
             -t ${REPOSITORY_URI}:latest \
-            -f Dockerfile \
-            .
+            -f ${{ inputs.dockerfile_path }} \
+            ${{ inputs.build_context }}
 
           # ECR에 푸시
           echo ""
@@ -462,9 +565,9 @@ jobs:
       - name: IAM Execution Role 생성 및 확인
         run: |
           set -euo pipefail
-          
+
           ROLE_NAME="ecsTaskExecutionRole"
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           
           echo "=== IAM Execution Role 확인 ==="
           echo "Role 이름: ${ROLE_NAME}"
@@ -551,6 +654,19 @@ jobs:
               --region ap-northeast-2
 
             echo "✓ Log Group 생성 완료: ${LOG_GROUP}"
+          fi
+
+          # Log Group 보관 기간 설정
+          RETENTION_DAYS=${{ inputs.log_retention_days }}
+          if [ "$RETENTION_DAYS" != "0" ]; then
+            echo "로그 보관 기간 설정 중: ${RETENTION_DAYS}일"
+            aws logs put-retention-policy \
+              --log-group-name "${LOG_GROUP}" \
+              --retention-in-days ${RETENTION_DAYS} \
+              --region ap-northeast-2
+            echo "✓ 로그 보관 기간 설정 완료"
+          else
+            echo "✓ 로그 보관 기간: 무제한 (기본값)"
           fi
 
           echo ""
@@ -689,7 +805,7 @@ jobs:
       - name: VPC 및 Subnet 조회
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
 
           echo "=== VPC 및 Subnet 조회 ==="
 
@@ -717,7 +833,7 @@ jobs:
       - name: Security Group 생성
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           VPC_ID="${{ env.VPC_ID }}"
           SG_NAME="${IMAGE_NAME}-alb-sg"
@@ -765,7 +881,7 @@ jobs:
       - name: Target Group 생성
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           VPC_ID="${{ env.VPC_ID }}"
           CONTAINER_PORT="${{ env.CONTAINER_PORT }}"
@@ -795,10 +911,10 @@ jobs:
               --vpc-id "${VPC_ID}" \
               --target-type ip \
               --health-check-path "${HEALTH_CHECK_PATH}" \
-              --health-check-interval-seconds 30 \
-              --health-check-timeout-seconds 5 \
-              --healthy-threshold-count 2 \
-              --unhealthy-threshold-count 2 \
+              --health-check-interval-seconds ${{ inputs.health_check_interval }} \
+              --health-check-timeout-seconds ${{ inputs.health_check_timeout }} \
+              --healthy-threshold-count ${{ inputs.healthy_threshold }} \
+              --unhealthy-threshold-count ${{ inputs.unhealthy_threshold }} \
               --region ${REGION} \
               --query 'TargetGroups[0].TargetGroupArn' \
               --output text)
@@ -812,7 +928,7 @@ jobs:
       - name: Application Load Balancer 생성
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           SUBNET_IDS="${{ env.SUBNET_IDS }}"
           SECURITY_GROUP_ID="${{ env.SECURITY_GROUP_ID }}"
@@ -883,7 +999,7 @@ jobs:
       - name: HTTPS Listener 생성 (443 포트)
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           ALB_ARN="${{ env.ALB_ARN }}"
           TARGET_GROUP_ARN="${{ env.TARGET_GROUP_ARN }}"
           CERTIFICATE_ARN="${{ env.CERTIFICATE_ARN }}"
@@ -923,7 +1039,7 @@ jobs:
       - name: HTTP Listener 생성 (80 → 443 리다이렉트)
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
           ALB_ARN="${{ env.ALB_ARN }}"
 
           echo "=== HTTP Listener 생성 (80 → 443 리다이렉트) ==="
@@ -968,7 +1084,7 @@ jobs:
       - name: ECS Service 배포
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
+          REGION="${{ env.AWS_REGION }}"
 
           # 변수 초기화
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
@@ -1015,7 +1131,7 @@ jobs:
               --cluster "${CLUSTER_NAME}" \
               --service "${SERVICE_NAME}" \
               --task-definition "${TASK_DEFINITION_ARN}" \
-              --desired-count 1 \
+              --desired-count ${{ inputs.ecs_desired_count }} \
               --capacity-provider-strategy capacityProvider=${CAPACITY_PROVIDER},weight=1 \
               ${FORCE_NEW_DEPLOYMENT} \
               --region ${REGION} \
@@ -1034,9 +1150,9 @@ jobs:
               --cluster "${CLUSTER_NAME}" \
               --service-name "${SERVICE_NAME}" \
               --task-definition "${TASK_DEFINITION_ARN}" \
-              --desired-count 1 \
+              --desired-count ${{ inputs.ecs_desired_count }} \
               --capacity-provider-strategy capacityProvider=${CAPACITY_PROVIDER},weight=1 \
-              --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${SECURITY_GROUP_ID}],assignPublicIp=ENABLED}" \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${SECURITY_GROUP_ID}],assignPublicIp=${{ inputs.assign_public_ip }}}" \
               --load-balancers "targetGroupArn=${TARGET_GROUP_ARN},containerName=${IMAGE_NAME},containerPort=${CONTAINER_PORT}" \
               --region ${REGION} \
               --tags key=Name,value=${SERVICE_NAME} key=Application,value=${IMAGE_NAME} key=ManagedBy,value=github-actions \
@@ -1050,10 +1166,11 @@ jobs:
           echo "SERVICE_NAME=${SERVICE_NAME}" >> $GITHUB_ENV
 
       - name: Route 53 DNS 레코드 생성
+        id: set-outputs
         run: |
           set -euo pipefail
-          REGION="ap-northeast-2"
-          ROOT_DOMAIN="ig-pilot.com"
+          REGION="${{ env.AWS_REGION }}"
+          ROOT_DOMAIN="${{ env.ROOT_DOMAIN }}"
 
           # 변수 초기화
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
@@ -1061,6 +1178,8 @@ jobs:
           HOSTED_ZONE_ID="${{ env.HOSTED_ZONE_ID }}"
           ALB_DNS="${{ env.ALB_DNS }}"
           ALB_ARN="${{ env.ALB_ARN }}"
+          SERVICE_NAME="${{ env.SERVICE_NAME }}"
+          CLUSTER_NAME="${{ env.CLUSTER_NAME }}"
 
           echo "=== Route 53 DNS 레코드 생성 ==="
 
@@ -1109,26 +1228,174 @@ jobs:
 
           echo "✓ DNS 레코드 구성 완료 (UPSERT)"
 
-          # 환경변수로 저장
+          # Job outputs 설정 (다음 job으로 전달)
+          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
+          echo "cluster_name=${CLUSTER_NAME}" >> $GITHUB_OUTPUT
+          echo "application_url=https://${DOMAIN}" >> $GITHUB_OUTPUT
+
+          # 환경변수로 저장 (같은 job 내에서 사용)
           echo "APPLICATION_URL=https://${DOMAIN}" >> $GITHUB_ENV
 
   ## 배포 모니터링: 배포된 애플리케이션의 상태를 확인합니다.
   monitor-deployment:
     needs: deploy-infrastructure-if-necessary
     runs-on: ubuntu-latest
-    environment: alpha
+    environment: ${{ inputs.deployment_phase }}
     permissions:
       id-token: write
       contents: read
     steps:
+      - name: AWS 로그인 정보 정의
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
       - name: ECS 서비스 상태 확인
         run: |
-          echo "work in progress"
+          set -euo pipefail
+          REGION="${{ env.AWS_REGION }}"
+          SERVICE_NAME="${{ needs.deploy-infrastructure-if-necessary.outputs.service_name }}"
+          CLUSTER_NAME="${{ needs.deploy-infrastructure-if-necessary.outputs.cluster_name }}"
 
-      - name: 애플리케이션 정상 배포 여부 확인
+          echo "=== ECS 서비스 상태 확인 ==="
+          echo "Cluster: ${CLUSTER_NAME}"
+          echo "Service: ${SERVICE_NAME}"
+
+          # ECS 서비스 안정화 대기
+          TIMEOUT=${{ inputs.ecs_stabilization_timeout }}
+          MAX_ITERATIONS=$((TIMEOUT / 10))
+          echo "ECS 서비스 안정화 대기 중 (최대 ${TIMEOUT}초)..."
+          for i in $(seq 1 $MAX_ITERATIONS); do
+            SERVICE_INFO=$(aws ecs describe-services \
+              --cluster "${CLUSTER_NAME}" \
+              --services "${SERVICE_NAME}" \
+              --region ${REGION} \
+              --output json)
+
+            RUNNING_COUNT=$(echo "$SERVICE_INFO" | jq -r '.services[0].runningCount')
+            DESIRED_COUNT=$(echo "$SERVICE_INFO" | jq -r '.services[0].desiredCount')
+            DEPLOYMENT_COUNT=$(echo "$SERVICE_INFO" | jq -r '.services[0].deployments | length')
+
+            # 매 5회마다 로그 출력 (로그 간소화)
+            if [ $((i % 5)) -eq 0 ] || [ "$RUNNING_COUNT" = "$DESIRED_COUNT" ]; then
+              echo "  [${i}/${MAX_ITERATIONS}] 실행: ${RUNNING_COUNT}/${DESIRED_COUNT}, 배포: ${DEPLOYMENT_COUNT}"
+            fi
+
+            # 안정화 확인
+            if [ "$RUNNING_COUNT" = "$DESIRED_COUNT" ] && [ "$DEPLOYMENT_COUNT" = "1" ]; then
+              echo "✓ ECS 서비스 안정화 완료"
+              break
+            fi
+
+            sleep 10
+          done
+
+          # 최종 상태 출력
+          echo ""
+          aws ecs describe-services \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region ${REGION} \
+            --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}' \
+            --output table
+
+      - name: 애플리케이션 Health Check
+        continue-on-error: true
+        id: health-check
         run: |
-          echo "work in progress"
+          set -euo pipefail
+          APPLICATION_URL="${{ needs.deploy-infrastructure-if-necessary.outputs.application_url }}"
+          HEALTH_CHECK_PATH="${{ inputs.health_check_path }}"
+
+          echo "=== 애플리케이션 Health Check ==="
+          echo "URL: ${APPLICATION_URL}${HEALTH_CHECK_PATH}"
+
+          # 애플리케이션 응답 대기 (최대 5분)
+          echo "애플리케이션 응답 대기 중..."
+          APP_READY=false
+
+          for i in {1..30}; do
+            HTTP_CODE=$(curl -k -s -o /dev/null -w "%{http_code}" "${APPLICATION_URL}${HEALTH_CHECK_PATH}" 2>/dev/null || echo "000")
+
+            # 매 3회마다 로그 출력 (로그 간소화)
+            if [ $((i % 3)) -eq 0 ] || [ "$HTTP_CODE" = "200" ]; then
+              echo "  [${i}/30] HTTP ${HTTP_CODE}"
+            fi
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ 애플리케이션 정상 응답"
+              APP_READY=true
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$APP_READY" = false ]; then
+            # GitHub Actions 경고 어노테이션
+            echo "::warning title=Health Check 실패::애플리케이션 응답 없음. URL: ${APPLICATION_URL}${HEALTH_CHECK_PATH}"
+
+            # Job Summary에 상세 정보 추가
+            echo "## ⚠️ Health Check 경고" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**상태**: 애플리케이션 응답 없음" >> $GITHUB_STEP_SUMMARY
+            echo "**URL**: [${APPLICATION_URL}${HEALTH_CHECK_PATH}](${APPLICATION_URL}${HEALTH_CHECK_PATH})" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔍 가능한 원인:" >> $GITHUB_STEP_SUMMARY
+            echo "- ACM 인증서 검증 대기 중 (5-30분 소요)" >> $GITHUB_STEP_SUMMARY
+            echo "- 컨테이너 내부 애플리케이션 오류" >> $GITHUB_STEP_SUMMARY
+            echo "- DNS 전파 지연" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 다음 단계:" >> $GITHUB_STEP_SUMMARY
+            echo "1. **5-10분 대기** 후 URL 직접 확인" >> $GITHUB_STEP_SUMMARY
+            echo "2. **CloudWatch Logs** 확인 (ECS Task 로그)" >> $GITHUB_STEP_SUMMARY
+            echo "3. **ECS Task 상태** 확인 (재시작 반복 여부)" >> $GITHUB_STEP_SUMMARY
+
+            echo ""
+            echo "⚠️  경고: Health check 응답 없음"
+            echo "   - DNS 전파 지연이나 ACM 인증서 검증 대기 중일 수 있습니다"
+            echo "   - 직접 확인: ${APPLICATION_URL}${HEALTH_CHECK_PATH}"
+            echo ""
+            echo "💡 일반적으로 ACM 인증서 검증은 5-30분 소요됩니다"
+            exit 1
+          fi
+
+          # Health Check 응답 출력
+          echo ""
+          echo "Health Check 응답:"
+          curl -k -s "${APPLICATION_URL}${HEALTH_CHECK_PATH}" | jq . 2>/dev/null || curl -k -s "${APPLICATION_URL}${HEALTH_CHECK_PATH}"
 
       - name: 배포 완료 알림
+        if: always()
         run: |
-          echo "work in progress"
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          IMAGE_TAG="${{ needs.build-docker-image.outputs.image_tag }}"
+          APPLICATION_URL="${{ needs.deploy-infrastructure-if-necessary.outputs.application_url }}"
+          DEPLOYMENT_PHASE="${{ inputs.deployment_phase }}"
+          HEALTH_CHECK_STATUS="${{ steps.health-check.outcome }}"
+
+          echo ""
+          echo "=========================================="
+          echo "✅ 배포 완료"
+          echo "=========================================="
+          echo ""
+          echo "애플리케이션: ${IMAGE_NAME}"
+          echo "버전: ${IMAGE_TAG}"
+          echo "배포 단계: ${DEPLOYMENT_PHASE}"
+          echo "접속 URL: ${APPLICATION_URL}"
+          echo ""
+
+          # Health Check 결과 표시
+          if [ "$HEALTH_CHECK_STATUS" = "failure" ]; then
+            echo "⚠️  Health Check: 응답 없음"
+            echo "   → ${APPLICATION_URL}/api/health 확인 필요"
+            echo "   → ACM 인증서 검증 대기 중일 수 있습니다 (5-30분)"
+            echo "   → CloudWatch Logs에서 컨테이너 로그 확인 권장"
+          elif [ "$HEALTH_CHECK_STATUS" = "success" ]; then
+            echo "✅ Health Check: 정상"
+          fi
+
+          echo ""
+          echo "=========================================="
