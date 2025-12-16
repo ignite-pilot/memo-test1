@@ -57,7 +57,8 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     && rm -rf aws awscliv2.zip
 
 # uv 설치 (Python 패키지 관리 도구)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+# 설치 실패 시에도 빌드 계속 진행 (pip fallback 사용)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh || echo "⚠️ uv 설치 실패 - pip을 사용합니다"
 ENV PATH="/root/.local/bin:$PATH"
 
 # Backend 코드 복사
@@ -76,11 +77,11 @@ RUN ls -la /app/frontend/dist && \
 WORKDIR /app/backend
 
 # Backend 의존성 설치
-RUN if command -v uv &> /dev/null; then \
-        echo "Using uv for package installation..."; \
+RUN if command -v uv >/dev/null 2>&1 && uv --version >/dev/null 2>&1; then \
+        echo "✓ Using uv for package installation..."; \
         uv pip install --system -r requirements.txt; \
     else \
-        echo "Using pip for package installation..."; \
+        echo "✓ Using pip for package installation..."; \
         pip install --no-cache-dir -r requirements.txt; \
     fi
 
