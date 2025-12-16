@@ -18,9 +18,16 @@ def get_secret(secret_name: str, region_name: str = "ap-northeast-2") -> Optiona
         Dictionary containing secret values, or None if retrieval fails
     """
     # Use AWS Secrets Manager if explicitly enabled or if running in AWS environment
-    # Check for AWS credentials or if explicitly enabled
-    use_aws_secrets = os.getenv("USE_AWS_SECRETS", "false").lower() == "true"
-    
+
+    # Check if explicitly disabled (highest priority)
+    use_aws_secrets_env = os.getenv("USE_AWS_SECRETS", "").lower()
+    if use_aws_secrets_env == "false":
+        # Explicitly disabled, skip all other checks
+        return None
+
+    # Check if explicitly enabled
+    use_aws_secrets = use_aws_secrets_env == "true"
+
     # Also check if we're in AWS environment (EC2, ECS, Lambda, etc.)
     # by checking for AWS-specific environment variables or metadata service
     if not use_aws_secrets:
@@ -32,7 +39,16 @@ def get_secret(secret_name: str, region_name: str = "ap-northeast-2") -> Optiona
         ]
         if any(aws_env_indicators):
             use_aws_secrets = True
-    
+
+    # Additional check: if PHASE is alpha/beta/production, prefer AWS Secrets Manager
+    # (unless explicitly disabled with USE_AWS_SECRETS=false)
+    if not use_aws_secrets:
+        phase = os.getenv("PHASE", "local").lower()
+        if phase in ["alpha", "beta", "production"]:
+            # Try to use AWS Secrets Manager, but don't fail if credentials are missing
+            # This allows testing with environment variables even in alpha/beta/production PHASE
+            use_aws_secrets = True
+
     # In local development without AWS env, return None to use environment variables
     if not use_aws_secrets:
         return None

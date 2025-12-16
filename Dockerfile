@@ -97,6 +97,14 @@ ENV HOST=0.0.0.0
 ENV PORT=8501
 ENV PHASE=alpha
 
+# AWS Secrets Manager 사용 여부 (기본값: false)
+# - 로컬 개발: false (환경변수 fallback 사용)
+# - ECS 배포: secrets.py가 자동으로 ECS 환경 감지하여 true로 변경
+# - 또는 PHASE=alpha/beta/production이면 자동으로 AWS Secrets Manager 시도
+# - 명시적 활성화: docker run 시 -e USE_AWS_SECRETS=true 전달
+# - 명시적 비활성화: docker run 시 -e USE_AWS_SECRETS=false 전달
+ENV USE_AWS_SECRETS=false
+
 # 애플리케이션 실행
 # uvicorn으로 FastAPI 서버 시작
 # - Backend API는 /api/* 경로에서 서빙
