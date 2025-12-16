@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: '/api/health'
+      ecr_base_name:
+        description: 'ECR 기본 경로 (기본값: aws-deploy-wizard)'
+        required: false
+        type: string
+        default: 'aws-deploy-wizard'
 
 jobs:
   ## Docker image 빌드: 애플리케이션을 패키징합니다.
@@ -120,9 +125,35 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: ECR Repository 생성 (이미 존재하면 건너뜁니다)
+      - name: ECR 생성    # 이미 존재하면 건너뜁니다
         run: |
-          echo "work in progress"
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          REPOSITORY_NAME="${{ inputs.ecr_base_name }}/${IMAGE_NAME}"
+
+          echo "=== Elastic Container Repository 확인 ==="
+          echo "Repository 이름: ${REPOSITORY_NAME}"
+          echo ""
+
+          # 리포지토리 존재 확인
+          if aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ap-northeast-2 >/dev/null 2>&1; then
+            echo "✓ 기존 ECR 사용: ${REPOSITORY_NAME}"
+            REPOSITORY_URI=$(aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ap-northeast-2 --query 'repositories[0].repositoryUri' --output text)
+            echo "  URI: ${REPOSITORY_URI}"
+          else
+            # 리포지토리 생성
+            echo "ECR 생성 중: ${REPOSITORY_NAME}"
+            REPOSITORY_URI=$(aws ecr create-repository \
+              --repository-name "${REPOSITORY_NAME}" \
+              --region ap-northeast-2 \
+              --image-scanning-configuration scanOnPush=true \
+              --image-tag-mutability MUTABLE \
+              --query 'repository.repositoryUri' \
+              --output text)
+            echo "✓ ECR 생성 완료: ${REPOSITORY_URI}"
+          fi
+
+          echo ""
+          echo "REPOSITORY_URI=${REPOSITORY_URI}" >> $GITHUB_ENV
 
       - name: 빌드한 Docker 이미지 푸시 (linux/amd64)
         run: |
