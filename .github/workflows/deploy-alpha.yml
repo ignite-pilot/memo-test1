@@ -513,6 +513,34 @@ jobs:
           echo ""
           echo "EXECUTION_ROLE_ARN=${ROLE_ARN}" >> "$GITHUB_ENV"
 
+      # ECS Task 로그 기록 및 확인을 위한 Log Group
+      # Service (애플리케이션) 단위로 Log Group 생성 (AWS Best Practice)
+      - name: CloudWatch Log Group 확인
+        run: |
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          CLUSTER_NAME="${{ inputs.ecs_cluster_base_name }}"
+          LOG_GROUP="/ecs/${CLUSTER_NAME}/${IMAGE_NAME}"
+
+          echo "=== CloudWatch Log Group 확인 ==="
+          echo "Log Group: ${LOG_GROUP}"
+          echo ""
+
+          # Log Group 존재 확인
+          if aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP}" --region ap-northeast-2 | grep -q "${LOG_GROUP}"; then
+            echo "✓ 기존 Log Group 사용: ${LOG_GROUP}"
+          else
+            echo "Log Group 생성 중: ${LOG_GROUP}"
+
+            aws logs create-log-group \
+              --log-group-name "${LOG_GROUP}" \
+              --region ap-northeast-2
+
+            echo "✓ Log Group 생성 완료: ${LOG_GROUP}"
+          fi
+
+          echo ""
+          echo "LOG_GROUP=${LOG_GROUP}" >> $GITHUB_ENV
+
       - name: ALB 및 Target Group 생성 (이미 존재하면 건너뜁니다)
         run: |
           echo "work in progress"
