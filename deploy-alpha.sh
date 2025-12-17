@@ -105,11 +105,17 @@ fi
 echo "Workflow run ID: ${RUN_ID}"
 echo "Workflow URL: ${RUN_URL}"
 echo ""
-echo "상태를 모니터링합니다 (15초마다 확인)..."
+echo "상태를 모니터링합니다..."
 echo ""
 
+# 스피너 문자 배열
+SPINNER=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+SPINNER_IDX=0
+
 # 상태 확인 루프
-POLL_INTERVAL=15
+POLL_INTERVAL=15        # API 확인 간격 (15초)
+SPINNER_INTERVAL=0.5    # 스피너 애니메이션 간격 (0.5초)
+
 while true; do
   RUN_RESPONSE=$(curl -s \
     -H "Accept: application/vnd.github+json" \
@@ -123,7 +129,8 @@ while true; do
   TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
 
   if [ "$STATUS" = "completed" ]; then
-    echo ""
+    # 스피너 라인 지우기
+    echo -e "\r\033[K"
     echo "=========================================="
     if [ "$CONCLUSION" = "success" ]; then
       echo "✅ Workflow가 성공적으로 완료되었습니다!"
@@ -205,6 +212,12 @@ while true; do
     fi
   fi
 
-  echo "[${TIMESTAMP}] 상태: ${STATUS}"
-  sleep $POLL_INTERVAL
+  # 스피너 애니메이션 (15초 동안 0.5초마다 업데이트)
+  SPINNER_STEPS=$(awk "BEGIN {print int($POLL_INTERVAL / $SPINNER_INTERVAL)}")
+  for ((i=0; i<SPINNER_STEPS; i++)); do
+    TIMESTAMP=$(date +"%Y-%m-%d %H:%M:%S")
+    printf "\r%s Workflow 실행 중... [%s]" "${SPINNER[$SPINNER_IDX]}" "${TIMESTAMP}"
+    SPINNER_IDX=$(( (SPINNER_IDX + 1) % ${#SPINNER[@]} ))
+    sleep $SPINNER_INTERVAL
+  done
 done
