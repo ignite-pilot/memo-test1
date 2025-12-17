@@ -802,12 +802,17 @@ jobs:
             --query 'Vpcs[0].VpcId' \
             --output text)
 
-          # Subnet 목록 조회 (ALB는 최소 2개 AZ 필요)
+          # Subnet 목록 조회 (ALB는 최소 2개 AZ 필요, 각 AZ당 1개 서브넷만 사용)
+          # 각 Availability Zone별로 첫 번째 서브넷만 선택
           SUBNET_IDS=$(aws ec2 describe-subnets \
             --filters "Name=vpc-id,Values=${VPC_ID}" \
             --region ${REGION} \
-            --query 'Subnets[*].SubnetId' \
-            --output text | tr '\t' ',')
+            --query 'Subnets[].[AvailabilityZone,SubnetId]' \
+            --output text | \
+            sort | \
+            awk '!seen[$1]++ {print $2}' | \
+            tr '\n' ',' | \
+            sed 's/,$//')
 
           echo "✓ VPC: ${VPC_ID}"
           echo "✓ Subnets: ${SUBNET_IDS}"
@@ -816,32 +821,32 @@ jobs:
           echo "VPC_ID=${VPC_ID}" >> $GITHUB_ENV
           echo "SUBNET_IDS=${SUBNET_IDS}" >> $GITHUB_ENV
 
-      - name: Security Group 생성
+      - name: ALB Security Group 생성
         run: |
           set -euo pipefail
           REGION="${{ env.AWS_REGION }}"
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           VPC_ID="${{ env.VPC_ID }}"
-          SG_NAME="${IMAGE_NAME}-alb-sg"
+          ALB_SG_NAME="${IMAGE_NAME}-alb-sg"
 
-          echo "=== Security Group 생성 ==="
+          echo "=== ALB Security Group 생성 ==="
 
           # Helper 함수
           is_valid() { [ "$1" != "None" ] && [ "$1" != "null" ] && [ -n "$1" ]; }
 
-          # 기존 Security Group 확인
-          SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
-            --filters "Name=group-name,Values=${SG_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
+          # 기존 ALB Security Group 확인
+          ALB_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${ALB_SG_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
             --region ${REGION} \
             --query 'SecurityGroups[0].GroupId' \
             --output text 2>/dev/null || echo "None")
 
-          if is_valid "$SECURITY_GROUP_ID"; then
-            echo "✓ 기존 Security Group 사용: ${SECURITY_GROUP_ID}"
+          if is_valid "$ALB_SG_ID"; then
+            echo "✓ 기존 ALB Security Group 사용: ${ALB_SG_ID}"
           else
-            # Security Group 생성
-            SECURITY_GROUP_ID=$(aws ec2 create-security-group \
-              --group-name "${SG_NAME}" \
+            # ALB Security Group 생성
+            ALB_SG_ID=$(aws ec2 create-security-group \
+              --group-name "${ALB_SG_NAME}" \
               --description "Security group for ${IMAGE_NAME} ALB" \
               --vpc-id "${VPC_ID}" \
               --region ${REGION} \
@@ -851,18 +856,67 @@ jobs:
             # HTTP(80), HTTPS(443) 인바운드 규칙 추가
             for PORT in 80 443; do
               aws ec2 authorize-security-group-ingress \
-                --group-id "${SECURITY_GROUP_ID}" \
+                --group-id "${ALB_SG_ID}" \
                 --protocol tcp \
                 --port ${PORT} \
                 --cidr 0.0.0.0/0 \
                 --region ${REGION} >/dev/null 2>&1 || true
             done
 
-            echo "✓ Security Group 생성 완료: ${SECURITY_GROUP_ID}"
+            echo "✓ ALB Security Group 생성 완료: ${ALB_SG_ID}"
           fi
 
           # 환경변수로 저장
-          echo "SECURITY_GROUP_ID=${SECURITY_GROUP_ID}" >> $GITHUB_ENV
+          echo "ALB_SECURITY_GROUP_ID=${ALB_SG_ID}" >> $GITHUB_ENV
+
+      - name: ECS Service Security Group 생성
+        run: |
+          set -euo pipefail
+          REGION="${{ env.AWS_REGION }}"
+          IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
+          VPC_ID="${{ env.VPC_ID }}"
+          ALB_SG_ID="${{ env.ALB_SECURITY_GROUP_ID }}"
+          CONTAINER_PORT=${{ inputs.container_port }}
+          ECS_SG_NAME="${IMAGE_NAME}-ecs-sg"
+
+          echo "=== ECS Service Security Group 생성 ==="
+
+          # Helper 함수
+          is_valid() { [ "$1" != "None" ] && [ "$1" != "null" ] && [ -n "$1" ]; }
+
+          # 기존 ECS Security Group 확인
+          ECS_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${ECS_SG_NAME}" "Name=vpc-id,Values=${VPC_ID}" \
+            --region ${REGION} \
+            --query 'SecurityGroups[0].GroupId' \
+            --output text 2>/dev/null || echo "None")
+
+          if is_valid "$ECS_SG_ID"; then
+            echo "✓ 기존 ECS Security Group 사용: ${ECS_SG_ID}"
+          else
+            # ECS Security Group 생성
+            ECS_SG_ID=$(aws ec2 create-security-group \
+              --group-name "${ECS_SG_NAME}" \
+              --description "Security group for ${IMAGE_NAME} ECS Service" \
+              --vpc-id "${VPC_ID}" \
+              --region ${REGION} \
+              --query 'GroupId' \
+              --output text)
+
+            # ALB로부터 컨테이너 포트 허용
+            aws ec2 authorize-security-group-ingress \
+              --group-id "${ECS_SG_ID}" \
+              --protocol tcp \
+              --port ${CONTAINER_PORT} \
+              --source-group "${ALB_SG_ID}" \
+              --region ${REGION} >/dev/null 2>&1 || true
+
+            echo "✓ ECS Security Group 생성 완료: ${ECS_SG_ID}"
+            echo "  ALB SG (${ALB_SG_ID}) → ECS SG (${ECS_SG_ID}):${CONTAINER_PORT}"
+          fi
+
+          # 환경변수로 저장
+          echo "ECS_SECURITY_GROUP_ID=${ECS_SG_ID}" >> $GITHUB_ENV
 
       - name: Target Group 생성
         run: |
@@ -917,7 +971,7 @@ jobs:
           REGION="${{ env.AWS_REGION }}"
           IMAGE_NAME="${{ needs.build-docker-image.outputs.image_name }}"
           SUBNET_IDS="${{ env.SUBNET_IDS }}"
-          SECURITY_GROUP_ID="${{ env.SECURITY_GROUP_ID }}"
+          ALB_SG_ID="${{ env.ALB_SECURITY_GROUP_ID }}"
           ALB_NAME="${IMAGE_NAME}-alb"
 
           echo "=== Application Load Balancer 생성 ==="
@@ -940,7 +994,7 @@ jobs:
             ALB_ARN=$(aws elbv2 create-load-balancer \
               --name "${ALB_NAME}" \
               --subnets $(echo ${SUBNET_IDS} | tr ',' ' ') \
-              --security-groups "${SECURITY_GROUP_ID}" \
+              --security-groups "${ALB_SG_ID}" \
               --scheme internet-facing \
               --type application \
               --ip-address-type ipv4 \
@@ -1078,7 +1132,7 @@ jobs:
           CLUSTER_NAME="${{ env.CLUSTER_NAME }}"
           TASK_DEFINITION_ARN="${{ env.TASK_DEFINITION_ARN }}"
           TARGET_GROUP_ARN="${{ env.TARGET_GROUP_ARN }}"
-          SECURITY_GROUP_ID="${{ env.SECURITY_GROUP_ID }}"
+          ECS_SG_ID="${{ env.ECS_SECURITY_GROUP_ID }}"
           SUBNET_IDS="${{ env.SUBNET_IDS }}"
           CONTAINER_PORT="${{ env.CONTAINER_PORT }}"
           SERVICE_NAME="${IMAGE_NAME}-service"
@@ -1138,7 +1192,7 @@ jobs:
               --task-definition "${TASK_DEFINITION_ARN}" \
               --desired-count ${{ inputs.ecs_desired_count }} \
               --capacity-provider-strategy capacityProvider=${CAPACITY_PROVIDER},weight=1 \
-              --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${SECURITY_GROUP_ID}],assignPublicIp=${{ inputs.assign_public_ip }}}" \
+              --network-configuration "awsvpcConfiguration={subnets=[${SUBNET_IDS}],securityGroups=[${ECS_SG_ID}],assignPublicIp=${{ inputs.assign_public_ip }}}" \
               --load-balancers "targetGroupArn=${TARGET_GROUP_ARN},containerName=${IMAGE_NAME},containerPort=${CONTAINER_PORT}" \
               --region ${REGION} \
               --tags key=Name,value=${SERVICE_NAME} key=Application,value=${IMAGE_NAME} key=ManagedBy,value=github-actions \
