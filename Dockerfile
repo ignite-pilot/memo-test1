@@ -110,4 +110,5 @@ ENV USE_AWS_SECRETS=false
 # uvicorn으로 FastAPI 서버 시작
 # - Backend API는 /api/* 경로에서 서빙
 # - Frontend는 / 및 기타 경로에서 서빙
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8501"]
+# Python 모듈 형식 사용 (PATH 독립적)
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8501"]
