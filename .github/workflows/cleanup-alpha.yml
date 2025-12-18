@@ -1,0 +1,512 @@
+name: Cleanup Alpha Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      # ============================================
+      # Tier 1: 필수 입력 파라미터
+      # ============================================
+      image_name:
+        description: '삭제할 애플리케이션 이름 (예: memo-test1)'
+        required: true
+        type: string
+        default: 'memo-test1'
+
+      deployment_phase:
+        description: '배포 환경 (alpha/beta/production)'
+        required: true
+        type: choice
+        options:
+          - alpha
+          - beta
+          - production
+        default: 'alpha'
+
+      # ============================================
+      # Tier 2: 삭제 범위 제어
+      # ============================================
+      delete_ecr_repository:
+        description: 'ECR Repository 삭제 (모든 이미지 포함)'
+        required: false
+        type: boolean
+        default: true
+
+      delete_ecs_service:
+        description: 'ECS Service 삭제'
+        required: false
+        type: boolean
+        default: true
+
+      delete_ecs_cluster:
+        description: 'ECS Cluster 삭제 (비어있을 때만)'
+        required: false
+        type: boolean
+        default: true
+
+      delete_load_balancer:
+        description: 'Application Load Balancer 삭제'
+        required: false
+        type: boolean
+        default: true
+
+      delete_dns_records:
+        description: 'Route 53 DNS 레코드 삭제'
+        required: false
+        type: boolean
+        default: true
+
+      delete_security_groups:
+        description: 'Security Groups 삭제'
+        required: false
+        type: boolean
+        default: true
+
+      delete_logs:
+        description: 'CloudWatch Log Group 삭제'
+        required: false
+        type: boolean
+        default: false
+
+      delete_iam_role:
+        description: 'IAM Task Execution Role 삭제'
+        required: false
+        type: boolean
+        default: false
+
+      # ============================================
+      # Tier 3: 설정 파라미터
+      # ============================================
+      aws_region:
+        description: 'AWS 리전'
+        required: false
+        type: string
+        default: 'ap-northeast-2'
+
+      ecs_cluster_base_name:
+        description: 'ECS Cluster 기본 이름'
+        required: false
+        type: string
+        default: 'ignite-pilot-cluster'
+
+      root_domain:
+        description: 'Route 53 Root 도메인'
+        required: false
+        type: string
+        default: 'ignite-pilot.com'
+
+      # ============================================
+      # Tier 4: 안전 장치
+      # ============================================
+      confirmation:
+        description: '정말로 삭제하시겠습니까? (DELETE 입력)'
+        required: true
+        type: string
+
+jobs:
+  validate-confirmation:
+    name: 삭제 확인
+    runs-on: ubuntu-latest
+    steps:
+      - name: 삭제 확인 검증
+        run: |
+          if [ "${{ inputs.confirmation }}" != "DELETE" ]; then
+            echo "❌ 삭제를 진행하려면 confirmation 필드에 'DELETE'를 입력해주세요."
+            exit 1
+          fi
+          echo "✅ 삭제 확인 완료"
+
+      - name: 삭제 대상 요약
+        run: |
+          echo "=================================="
+          echo "삭제 대상 리소스 요약"
+          echo "=================================="
+          echo "애플리케이션: ${{ inputs.image_name }}"
+          echo "환경: ${{ inputs.deployment_phase }}"
+          echo "리전: ${{ inputs.aws_region }}"
+          echo ""
+          echo "삭제 범위:"
+          echo "  - ECR Repository: ${{ inputs.delete_ecr_repository }}"
+          echo "  - ECS Service: ${{ inputs.delete_ecs_service }}"
+          echo "  - ECS Cluster: ${{ inputs.delete_ecs_cluster }}"
+          echo "  - Load Balancer: ${{ inputs.delete_load_balancer }}"
+          echo "  - DNS Records: ${{ inputs.delete_dns_records }}"
+          echo "  - Security Groups: ${{ inputs.delete_security_groups }}"
+          echo "  - CloudWatch Logs: ${{ inputs.delete_logs }}"
+          echo "  - IAM Role: ${{ inputs.delete_iam_role }}"
+          echo "=================================="
+
+  cleanup-resources:
+    name: AWS 리소스 정리
+    needs: validate-confirmation
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: ${{ inputs.aws_region }}
+      IMAGE_NAME: ${{ inputs.image_name }}
+      DEPLOYMENT_PHASE: ${{ inputs.deployment_phase }}
+      ROOT_DOMAIN: ${{ inputs.root_domain }}
+      CLUSTER_NAME: ${{ inputs.ecs_cluster_base_name }}
+
+    steps:
+      - name: Checkout 코드
+        uses: actions/checkout@v4
+
+      - name: AWS 자격 증명 구성
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::575084400422:role/GitHubActionsRole
+          role-session-name: GitHubActions-Cleanup-${{ inputs.deployment_phase }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: AWS CLI 버전 확인
+        run: aws --version
+
+      # ============================================
+      # Helper Functions (모든 단계에서 사용)
+      # ============================================
+      - name: Helper Functions 정의
+        id: helpers
+        run: |
+          cat << 'EOF_HELPERS' > /tmp/cleanup-helpers.sh
+          #!/bin/bash
+
+          # 리소스가 존재하지 않으면 true, 존재하면 false
+          is_missing() {
+            [ "$1" = "None" ] || [ "$1" = "null" ] || [ -z "$1" ] || [ "$1" = "NONE" ] || [ "$1" = "INACTIVE" ]
+          }
+
+          # 리소스 삭제 대기 (최대 120초)
+          wait_for_deletion() {
+            local check_cmd="$1"
+            local max_iterations=24
+
+            for i in $(seq 1 $max_iterations); do
+              local state=$(eval "$check_cmd" 2>/dev/null || echo "deleted")
+              if is_missing "$state"; then
+                echo "✓ 삭제 완료"
+                return 0
+              fi
+              echo "  상태: ${state} (${i}/${max_iterations})"
+              sleep 5
+            done
+            echo "⚠️  대기 시간 초과"
+            return 1
+          }
+
+          # Security Group 삭제 (ENI detach 재시도)
+          delete_sg_with_retry() {
+            local sg_id="$1"
+            local sg_name="$2"
+            local region="$3"
+
+            if is_missing "$sg_id"; then
+              echo "✓ ${sg_name} Security Group이 이미 존재하지 않습니다"
+              return 0
+            fi
+
+            echo "${sg_name} Security Group 삭제 중: ${sg_id}"
+            for i in {1..6}; do
+              if aws ec2 delete-security-group --group-id "${sg_id}" --region ${region} 2>/dev/null; then
+                echo "✓ ${sg_name} Security Group 삭제 완료"
+                return 0
+              fi
+              [ $i -eq 6 ] && echo "⚠️  ${sg_name} Security Group 삭제 실패 (ENI가 아직 연결되어 있을 수 있습니다)" || {
+                echo "  재시도 중... (${i}/6)"
+                sleep 10
+              }
+            done
+            return 1
+          }
+          EOF_HELPERS
+
+          chmod +x /tmp/cleanup-helpers.sh
+          echo "✓ Helper functions 준비 완료"
+
+      # ============================================
+      # Step 1: Route 53 DNS 레코드 삭제
+      # ============================================
+      - name: Route 53 DNS 레코드 삭제
+        if: inputs.delete_dns_records == true
+        run: |
+          set -euo pipefail
+          source /tmp/cleanup-helpers.sh
+
+          echo "=== Route 53 DNS 레코드 삭제 ==="
+
+          # 도메인 이름 결정
+          DOMAIN="${{ inputs.deployment_phase == 'production' && format('{0}.{1}', env.IMAGE_NAME, env.ROOT_DOMAIN) || format('{0}.{1}.{2}', inputs.deployment_phase, env.IMAGE_NAME, env.ROOT_DOMAIN) }}"
+          echo "도메인: ${DOMAIN}"
+
+          # Hosted Zone ID 조회
+          HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+            --query "HostedZones[?Name=='${{ env.ROOT_DOMAIN }}.'].Id" \
+            --output text | cut -d'/' -f3 || echo "")
+
+          if is_missing "$HOSTED_ZONE_ID"; then
+            echo "⚠️  Hosted Zone을 찾을 수 없습니다"
+            exit 0
+          fi
+
+          # A 레코드 삭제
+          RECORD_SET=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id "${HOSTED_ZONE_ID}" \
+            --query "ResourceRecordSets[?Name=='${DOMAIN}.' && Type=='A']" \
+            --output json)
+
+          if [ "$(echo "$RECORD_SET" | jq 'length')" -gt 0 ]; then
+            echo "A 레코드 삭제 중..."
+            aws route53 change-resource-record-sets \
+              --hosted-zone-id "${HOSTED_ZONE_ID}" \
+              --change-batch "$(jq -nc --arg domain "$DOMAIN" --argjson alias "$(echo "$RECORD_SET" | jq -r '.[0].AliasTarget')" \
+                '{Changes: [{Action: "DELETE", ResourceRecordSet: {Name: $domain, Type: "A", AliasTarget: $alias}}]}')" >/dev/null
+            echo "✓ A 레코드 삭제 완료"
+          else
+            echo "✓ A 레코드가 이미 존재하지 않습니다"
+          fi
+
+          # ACM 검증 CNAME 레코드 삭제
+          CNAME_RECORDS=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id "${HOSTED_ZONE_ID}" \
+            --query "ResourceRecordSets[?contains(Name, '_') && contains(Name, 'acm-validations.aws') && Type=='CNAME']" \
+            --output json)
+
+          CNAME_COUNT=$(echo "$CNAME_RECORDS" | jq 'length')
+          if [ "$CNAME_COUNT" -gt 0 ]; then
+            echo "ACM 검증 레코드 ${CNAME_COUNT}개 삭제 중..."
+            echo "$CNAME_RECORDS" | jq -c '.[]' | while read record; do
+              aws route53 change-resource-record-sets \
+                --hosted-zone-id "${HOSTED_ZONE_ID}" \
+                --change-batch "$(echo "$record" | jq -c '{Changes: [{Action: "DELETE", ResourceRecordSet: {Name: .Name, Type: "CNAME", TTL: .TTL, ResourceRecords: .ResourceRecords}}]}')" >/dev/null 2>&1 || true
+            done
+            echo "✓ ACM 검증 레코드 삭제 완료"
+          else
+            echo "✓ ACM 검증 레코드가 존재하지 않습니다"
+          fi
+
+      # ============================================
+      # Step 2-4: Load Balancer 관련 리소스 삭제
+      # (Listener → ALB → Target Group 순서)
+      # ============================================
+      - name: Load Balancer 리소스 삭제
+        if: inputs.delete_load_balancer == true
+        run: |
+          set -euo pipefail
+          source /tmp/cleanup-helpers.sh
+          REGION="${{ env.AWS_REGION }}"
+          ALB_NAME="${{ env.IMAGE_NAME }}-alb"
+          TG_NAME="${{ env.IMAGE_NAME }}-tg"
+
+          echo "=== Load Balancer 리소스 삭제 ==="
+
+          # ALB ARN 조회
+          ALB_ARN=$(aws elbv2 describe-load-balancers --names "${ALB_NAME}" --region ${REGION} \
+            --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "None")
+
+          if ! is_missing "$ALB_ARN"; then
+            # Listener 삭제
+            for LISTENER_ARN in $(aws elbv2 describe-listeners --load-balancer-arn "${ALB_ARN}" \
+              --region ${REGION} --query 'Listeners[*].ListenerArn' --output text 2>/dev/null); do
+              aws elbv2 delete-listener --listener-arn "${LISTENER_ARN}" --region ${REGION}
+              echo "✓ Listener 삭제: ${LISTENER_ARN}"
+            done
+
+            # ALB 삭제
+            echo "ALB 삭제 중..."
+            aws elbv2 delete-load-balancer --load-balancer-arn "${ALB_ARN}" --region ${REGION}
+            wait_for_deletion "aws elbv2 describe-load-balancers --load-balancer-arns ${ALB_ARN} --region ${REGION} --query 'LoadBalancers[0].State.Code' --output text"
+          else
+            echo "✓ ALB가 존재하지 않습니다"
+          fi
+
+          # Target Group 삭제
+          TG_ARN=$(aws elbv2 describe-target-groups --names "${TG_NAME}" --region ${REGION} \
+            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || echo "None")
+
+          if ! is_missing "$TG_ARN"; then
+            aws elbv2 delete-target-group --target-group-arn "${TG_ARN}" --region ${REGION}
+            echo "✓ Target Group 삭제 완료"
+          else
+            echo "✓ Target Group이 존재하지 않습니다"
+          fi
+
+      # ============================================
+      # Step 5-7: ECS 리소스 삭제
+      # (Service → Task Definition → Cluster 순서)
+      # ============================================
+      - name: ECS 리소스 삭제
+        if: inputs.delete_ecs_service == true || inputs.delete_ecs_cluster == true
+        run: |
+          set -euo pipefail
+          source /tmp/cleanup-helpers.sh
+          REGION="${{ env.AWS_REGION }}"
+          CLUSTER_NAME="${{ env.CLUSTER_NAME }}"
+          SERVICE_NAME="${{ env.IMAGE_NAME }}-service"
+          FAMILY="${{ env.IMAGE_NAME }}-task"
+
+          echo "=== ECS 리소스 삭제 ==="
+
+          # ECS Service 삭제
+          if [ "${{ inputs.delete_ecs_service }}" = "true" ]; then
+            SERVICE_STATUS=$(aws ecs describe-services --cluster "${CLUSTER_NAME}" --services "${SERVICE_NAME}" \
+              --region ${REGION} --query 'services[0].status' --output text 2>/dev/null || echo "NONE")
+
+            if ! is_missing "$SERVICE_STATUS"; then
+              echo "Service 종료 및 삭제 중..."
+              aws ecs update-service --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}" \
+                --desired-count 0 --region ${REGION} >/dev/null
+              sleep 10
+              aws ecs delete-service --cluster "${CLUSTER_NAME}" --service "${SERVICE_NAME}" \
+                --force --region ${REGION} >/dev/null
+              wait_for_deletion "aws ecs describe-services --cluster ${CLUSTER_NAME} --services ${SERVICE_NAME} --region ${REGION} --query 'services[0].status' --output text"
+            else
+              echo "✓ Service가 존재하지 않습니다"
+            fi
+
+            # Task Definition 등록 취소
+            TASK_DEFS=$(aws ecs list-task-definitions --family-prefix "${FAMILY}" --region ${REGION} \
+              --query 'taskDefinitionArns[]' --output text 2>/dev/null || echo "")
+            if [ -n "$TASK_DEFS" ]; then
+              COUNT=0
+              for ARN in $TASK_DEFS; do
+                aws ecs deregister-task-definition --task-definition "${ARN}" --region ${REGION} >/dev/null
+                COUNT=$((COUNT + 1))
+              done
+              echo "✓ ${COUNT}개 Task Definition 등록 취소 완료"
+            else
+              echo "✓ Task Definition이 존재하지 않습니다"
+            fi
+          fi
+
+          # ECS Cluster 삭제
+          if [ "${{ inputs.delete_ecs_cluster }}" = "true" ]; then
+            CLUSTER_STATUS=$(aws ecs describe-clusters --clusters "${CLUSTER_NAME}" --region ${REGION} \
+              --query 'clusters[0].status' --output text 2>/dev/null || echo "NONE")
+
+            if ! is_missing "$CLUSTER_STATUS"; then
+              SERVICE_COUNT=$(aws ecs list-services --cluster "${CLUSTER_NAME}" --region ${REGION} \
+                --query 'length(serviceArns)' --output text 2>/dev/null || echo "0")
+
+              if [ "$SERVICE_COUNT" = "0" ]; then
+                aws ecs delete-cluster --cluster "${CLUSTER_NAME}" --region ${REGION} >/dev/null
+                echo "✓ Cluster 삭제 완료"
+              else
+                echo "⚠️  Cluster에 ${SERVICE_COUNT}개 서비스가 남아있어 삭제를 건너뜁니다"
+              fi
+            else
+              echo "✓ Cluster가 존재하지 않습니다"
+            fi
+          fi
+
+      # ============================================
+      # Step 8: Security Groups 삭제
+      # ============================================
+      - name: Security Groups 삭제
+        if: inputs.delete_security_groups == true
+        run: |
+          set -euo pipefail
+          source /tmp/cleanup-helpers.sh
+          REGION="${{ env.AWS_REGION }}"
+
+          echo "=== Security Groups 삭제 ==="
+
+          VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
+            --region ${REGION} --query 'Vpcs[0].VpcId' --output text)
+
+          # ECS SG 조회 및 삭제 (ALB SG보다 먼저)
+          ECS_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.IMAGE_NAME }}-ecs-sg" "Name=vpc-id,Values=${VPC_ID}" \
+            --region ${REGION} --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+          delete_sg_with_retry "${ECS_SG_ID}" "ECS" "${REGION}"
+
+          # ALB SG 조회 및 삭제
+          ALB_SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.IMAGE_NAME }}-alb-sg" "Name=vpc-id,Values=${VPC_ID}" \
+            --region ${REGION} --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || echo "None")
+          delete_sg_with_retry "${ALB_SG_ID}" "ALB" "${REGION}"
+
+      # ============================================
+      # Step 9-11: 기타 리소스 삭제
+      # ============================================
+      - name: 기타 리소스 삭제 (Logs, IAM, ECR)
+        if: inputs.delete_logs == true || inputs.delete_iam_role == true || inputs.delete_ecr_repository == true
+        run: |
+          set -euo pipefail
+          source /tmp/cleanup-helpers.sh
+          REGION="${{ env.AWS_REGION }}"
+
+          echo "=== 기타 리소스 삭제 ==="
+
+          # CloudWatch Log Group
+          if [ "${{ inputs.delete_logs }}" = "true" ]; then
+            LOG_GROUP="/ecs/${{ env.CLUSTER_NAME }}/${{ env.IMAGE_NAME }}"
+            if aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP}" \
+              --region ${REGION} 2>/dev/null | grep -q "${LOG_GROUP}"; then
+              aws logs delete-log-group --log-group-name "${LOG_GROUP}" --region ${REGION}
+              echo "✓ Log Group 삭제 완료"
+            else
+              echo "✓ Log Group이 존재하지 않습니다"
+            fi
+          fi
+
+          # IAM Role
+          if [ "${{ inputs.delete_iam_role }}" = "true" ]; then
+            ROLE_NAME="ecsTaskExecutionRole-${{ env.IMAGE_NAME }}"
+            if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+              # Inline policies 삭제
+              for POLICY in $(aws iam list-role-policies --role-name "${ROLE_NAME}" \
+                --query 'PolicyNames[]' --output text 2>/dev/null); do
+                aws iam delete-role-policy --role-name "${ROLE_NAME}" --policy-name "${POLICY}"
+              done
+              # Managed policies detach
+              for ARN in $(aws iam list-attached-role-policies --role-name "${ROLE_NAME}" \
+                --query 'AttachedPolicies[*].PolicyArn' --output text 2>/dev/null); do
+                aws iam detach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${ARN}"
+              done
+              aws iam delete-role --role-name "${ROLE_NAME}"
+              echo "✓ IAM Role 삭제 완료"
+            else
+              echo "✓ IAM Role이 존재하지 않습니다"
+            fi
+          fi
+
+          # ECR Repository
+          if [ "${{ inputs.delete_ecr_repository }}" = "true" ]; then
+            if aws ecr describe-repositories --repository-names "${{ env.IMAGE_NAME }}" \
+              --region ${REGION} >/dev/null 2>&1; then
+              IMAGE_COUNT=$(aws ecr list-images --repository-name "${{ env.IMAGE_NAME }}" \
+                --region ${REGION} --query 'length(imageIds)' --output text 2>/dev/null || echo "0")
+              aws ecr delete-repository --repository-name "${{ env.IMAGE_NAME }}" \
+                --region ${REGION} --force
+              echo "✓ ECR Repository 삭제 완료 (${IMAGE_COUNT}개 이미지)"
+            else
+              echo "✓ ECR Repository가 존재하지 않습니다"
+            fi
+          fi
+
+      # ============================================
+      # 완료 알림
+      # ============================================
+      - name: 정리 완료 알림
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "✅ 리소스 정리 완료"
+          echo "=========================================="
+          echo ""
+          echo "삭제된 리소스:"
+          echo "  - DNS Records: ${{ inputs.delete_dns_records }}"
+          echo "  - Load Balancer: ${{ inputs.delete_load_balancer }}"
+          echo "  - ECS Service: ${{ inputs.delete_ecs_service }}"
+          echo "  - ECS Cluster: ${{ inputs.delete_ecs_cluster }}"
+          echo "  - Security Groups: ${{ inputs.delete_security_groups }}"
+          echo "  - CloudWatch Logs: ${{ inputs.delete_logs }}"
+          echo "  - IAM Role: ${{ inputs.delete_iam_role }}"
+          echo "  - ECR Repository: ${{ inputs.delete_ecr_repository }}"
+          echo ""
+          echo "⚠️  일부 리소스는 의존성 때문에 삭제되지 않았을 수도 있습니다."
+          echo "   필요시 AWS Console에서 확인해주세요."
+          echo "=========================================="
