@@ -11,13 +11,7 @@ on:
       aws_region:
         description: 'AWS 리전 (기본값: ap-northeast-2)'
         required: false
-        type: choice
-        options:
-          - ap-northeast-2
-          - us-east-1
-          - us-west-2
-          - eu-west-1
-          - ap-southeast-1
+        type: string
         default: 'ap-northeast-2'
       root_domain:
         description: '루트 도메인 (예: ig-pilot.com)'
@@ -131,15 +125,8 @@ on:
           - '30'
           - '60'
           - '90'
-          - '120'
-          - '150'
           - '180'
           - '365'
-          - '400'
-          - '545'
-          - '731'
-          - '1827'
-          - '3653'
         default: '7'
 
 # 공통 환경 변수
@@ -266,7 +253,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-2
+          aws-region: ${{ inputs.aws_region }}
 
       # 도메인 접근 인증서 생성을 위한 사전 작업
       # 도메인 생성은 시간이 오래 걸리므로, 최대한 빨리 진행하고 최종 검증 단계에서 확인해 빌드 시간을 줄입니다.
@@ -330,7 +317,7 @@ jobs:
           CERTIFICATE_ARN=""
           CERT_LIST=$(aws acm list-certificates \
             --certificate-statuses ISSUED PENDING_VALIDATION \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --query 'CertificateSummaryList[*].CertificateArn' \
             --output text)
 
@@ -338,7 +325,7 @@ jobs:
             # 인증서 상세 정보 조회
             CERT_DETAIL=$(aws acm describe-certificate \
               --certificate-arn "$CERT_ARN" \
-              --region ap-northeast-2 \
+              --region ${{ inputs.aws_region }} \
               --output json)
 
             CERT_DOMAIN=$(echo "$CERT_DETAIL" | jq -r '.Certificate.DomainName')
@@ -364,7 +351,7 @@ jobs:
               --domain-name "${WILDCARD_DOMAIN}" \
               --subject-alternative-names "${DOMAIN}" \
               --validation-method DNS \
-              --region ap-northeast-2 \
+              --region ${{ inputs.aws_region }} \
               --query 'CertificateArn' \
               --output text)
 
@@ -388,7 +375,7 @@ jobs:
           # 인증서 상태 확인
           CERT_STATUS=$(aws acm describe-certificate \
             --certificate-arn "${CERTIFICATE_ARN}" \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --query 'Certificate.Status' \
             --output text)
 
@@ -407,7 +394,7 @@ jobs:
             sleep 5
             VALIDATION_RECORDS=$(aws acm describe-certificate \
               --certificate-arn "${CERTIFICATE_ARN}" \
-              --region ap-northeast-2 \
+              --region ${{ inputs.aws_region }} \
               --query 'Certificate.DomainValidationOptions[0].ResourceRecord' \
               --output json)
 
@@ -429,7 +416,7 @@ jobs:
 
           VALIDATION_OPTIONS=$(aws acm describe-certificate \
             --certificate-arn "${CERTIFICATE_ARN}" \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --query 'Certificate.DomainValidationOptions' \
             --output json)
 
@@ -443,17 +430,17 @@ jobs:
 
               aws route53 change-resource-record-sets \
                 --hosted-zone-id "${HOSTED_ZONE_ID}" \
-                --change-batch "{
-                  \"Changes\": [{
-                    \"Action\": \"UPSERT\",
-                    \"ResourceRecordSet\": {
-                      \"Name\": \"${RECORD_NAME}\",
-                      \"Type\": \"${RECORD_TYPE}\",
-                      \"TTL\": 300,
-                      \"ResourceRecords\": [{\"Value\": \"${RECORD_VALUE}\"}]
+                --change-batch '{
+                  "Changes": [{
+                    "Action": "UPSERT",
+                    "ResourceRecordSet": {
+                      "Name": "${RECORD_NAME}",
+                      "Type": "${RECORD_TYPE}",
+                      "TTL": 300,
+                      "ResourceRecords": [{"Value": "${RECORD_VALUE}"}]
                     }
                   }]
-                }" > /dev/null
+                }' > /dev/null
 
               echo "  ✓ DNS 레코드 추가 완료"
             fi
@@ -473,16 +460,16 @@ jobs:
           echo ""
 
           # 리포지토리 존재 확인
-          if aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ap-northeast-2 >/dev/null 2>&1; then
+          if aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ${{ inputs.aws_region }} >/dev/null 2>&1; then
             echo "✓ 기존 ECR 사용: ${REPOSITORY_NAME}"
-            REPOSITORY_URI=$(aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ap-northeast-2 --query 'repositories[0].repositoryUri' --output text)
+            REPOSITORY_URI=$(aws ecr describe-repositories --repository-names "${REPOSITORY_NAME}" --region ${{ inputs.aws_region }} --query 'repositories[0].repositoryUri' --output text)
             echo "  URI: ${REPOSITORY_URI}"
           else
             # 리포지토리 생성
             echo "ECR 생성 중: ${REPOSITORY_NAME}"
             REPOSITORY_URI=$(aws ecr create-repository \
               --repository-name "${REPOSITORY_NAME}" \
-              --region ap-northeast-2 \
+              --region ${{ inputs.aws_region }} \
               --image-scanning-configuration scanOnPush=true \
               --image-tag-mutability MUTABLE \
               --query 'repository.repositoryUri' \
@@ -506,7 +493,7 @@ jobs:
 
           # ECR 로그인
           echo "ECR 인증 중..."
-          aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${REPOSITORY_URI%%/*}
+          aws ecr get-login-password --region ${{ inputs.aws_region }} | docker login --username AWS --password-stdin ${REPOSITORY_URI%%/*}
 
           # Docker 이미지 빌드 (ECS Fargate 요구사항)
           echo "Docker 이미지 빌드 중 (${{ inputs.target_platform }})..."
@@ -538,7 +525,7 @@ jobs:
           # Cluster 존재 확인
           CLUSTER_STATUS=$(aws ecs describe-clusters \
             --clusters "${CLUSTER_NAME}" \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --query 'clusters[0].status' \
             --output text 2>/dev/null || echo "NONE")
 
@@ -549,7 +536,7 @@ jobs:
             echo "ECS Cluster 생성 중: ${CLUSTER_NAME}"
             aws ecs create-cluster \
               --cluster-name "${CLUSTER_NAME}" \
-              --region ap-northeast-2 \
+              --region ${{ inputs.aws_region }} \
               --tags key=Name,value=${CLUSTER_NAME} key=ManagedBy,value=github-actions \
               > /dev/null
 
@@ -644,14 +631,14 @@ jobs:
           echo ""
 
           # Log Group 존재 확인
-          if aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP}" --region ap-northeast-2 | grep -q "${LOG_GROUP}"; then
+          if aws logs describe-log-groups --log-group-name-prefix "${LOG_GROUP}" --region ${{ inputs.aws_region }} | grep -q "${LOG_GROUP}"; then
             echo "✓ 기존 Log Group 사용: ${LOG_GROUP}"
           else
             echo "Log Group 생성 중: ${LOG_GROUP}"
 
             aws logs create-log-group \
               --log-group-name "${LOG_GROUP}" \
-              --region ap-northeast-2
+              --region ${{ inputs.aws_region }}
 
             echo "✓ Log Group 생성 완료: ${LOG_GROUP}"
           fi
@@ -663,7 +650,7 @@ jobs:
             aws logs put-retention-policy \
               --log-group-name "${LOG_GROUP}" \
               --retention-in-days ${RETENTION_DAYS} \
-              --region ap-northeast-2
+              --region ${{ inputs.aws_region }}
             echo "✓ 로그 보관 기간 설정 완료"
           else
             echo "✓ 로그 보관 기간: 무제한 (기본값)"
@@ -702,7 +689,7 @@ jobs:
           echo "Secrets Manager 키 조회 중..."
           SECRET_RESPONSE=$(aws secretsmanager get-secret-value \
             --secret-id "${SECRET_NAME}" \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --output json 2>/dev/null || echo "{}")
 
           SECRET_JSON=$(echo "$SECRET_RESPONSE" | jq -r '.SecretString // "{}"')
@@ -756,7 +743,7 @@ jobs:
                 logDriver: "awslogs",
                 options: {
                   "awslogs-group": $log_group,
-                  "awslogs-region": "ap-northeast-2",
+                  "awslogs-region": "${{ inputs.aws_region }}",
                   "awslogs-stream-prefix": $name
                 }
               },
@@ -773,7 +760,7 @@ jobs:
             --memory ${{ inputs.task_memory }} \
             --execution-role-arn "${EXECUTION_ROLE_ARN}" \
             --container-definitions "$CONTAINER_DEFS" \
-            --region ap-northeast-2 \
+            --region ${{ inputs.aws_region }} \
             --tags key=Name,value=${FAMILY} key=Application,value=${IMAGE_NAME} key=ManagedBy,value=github-actions \
             --query 'taskDefinition.taskDefinitionArn' \
             --output text)
@@ -1290,7 +1277,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-2
+          aws-region: ${{ inputs.aws_region }}
 
       - name: ECS 서비스 상태 확인
         run: |
